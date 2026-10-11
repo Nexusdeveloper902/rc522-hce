@@ -86,9 +86,10 @@ Releases are cut by the release job in CI, not by hand:
   (see their FAQ); every release tag is then picked up automatically. Keep
   `arduino-lint` (CI) clean — especially `library.properties`,
   `keywords.txt`, and `examples/` layout.
-- PlatformIO registry: `pio pkg publish` (maintainer account) after a
-  release so `lib_deps = NexusDeveloper902/RC522-HCE@^x.y.z` works
-  without a git URL.
+- PlatformIO registry: automatic — the release job runs
+  `pio pkg publish` after cutting the release (needs the
+  `PLATFORMIO_AUTH_TOKEN` repo secret, already configured). Users then
+  install via `geek02/RC522-HCE@^x.y.z`.
 
 ## Security issues
 

@@ -61,7 +61,7 @@ docs/                   protocol spec + wiring guide + API reference (API.md) + 
 
 ```ini
 lib_deps =
-    https://github.com/NexusDeveloper902/rc522-hce.git
+    geek02/RC522-HCE@^2.0.0
     miguelbalboa/MFRC522@^1.4.11
 ```
 
@@ -73,7 +73,7 @@ bench-proven setting over Dupont jumpers; see `docs/WIRING.md`).
 >
 > ```ini
 > lib_deps =
->     https://github.com/NexusDeveloper902/rc522-hce.git
+>     geek02/RC522-HCE@^2.0.0
 >     miguelbalboa/MFRC522@^1.4.11
 >     mike-matera/ArduinoSTL@^1.3.3   # 8-bit AVR only
 > ```

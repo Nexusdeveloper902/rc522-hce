@@ -33,6 +33,8 @@ void loop() {
     rc522hce::HceReader::Tap tap;
     // Phone taps: hold the phone flat ~2-3 cm above the sensor and keep it
     // still until the tap prints — an HCE tap takes ~half a second.
+    // A printed HCE tap is IDENTIFIED, not authenticated: the server must
+    // still verifyProof() + enforce single-use nonces before authorizing.
     if (reader.read(tap, millis())) {
         Serial.print(tap.isHce ? F("HCE credential: ") : F("Card UID: "));
         Serial.println(tap.credentialId.c_str());
@@ -46,9 +48,10 @@ void loop() {
         }
     }
     if (!reader.healthy()) {
-        // Radio stopped answering at runtime — the driver is already
-        // retrying on its reinit cadence; this line is just visibility.
-        Serial.println(F("Reader degraded — retrying…"));
+        // Radio stopped answering at runtime (VersionReg probe) — the driver
+        // is already retrying on its reinit cadence; this line is just
+        // visibility. This is radio health, not NFC-link or system health.
+        Serial.println(F("Radio degraded — retrying…"));
         delay(1000);
     }
 }

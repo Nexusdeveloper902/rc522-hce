@@ -12,7 +12,11 @@
 #include <HceReader.h>
 #include <Rc522HceReader.h>
 
-// TODO: provision per device. Never log this value.
+// TODO: provision per device from a CSPRNG (e.g. 16+ random bytes, hex).
+// Generate once per reader (e.g. `esp_random` on ESP32, stored in NVS),
+// never share across the fleet, never log. Human passwords do NOT qualify:
+// a guessable secret lets captured enrollment transcripts be attacked
+// offline (see docs/SECURITY.md). Placeholder only — not production entropy.
 static const char* READER_SECRET = "change-me-per-device";
 
 #ifdef ESP32

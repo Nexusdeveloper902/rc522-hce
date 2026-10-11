@@ -19,13 +19,16 @@
  *   - K_cred is PER CREDENTIAL, generated and stored by the phone. Neither
  *     the reader nor this library ever holds it.
  *   - The reader sends its own nonce (AID exchange) and relays the phone's
- *     MAC unverified; YOUR SERVER calls verifyProof() with that
- *     credential's key to accept the tap.
+ *     MAC unverified; YOUR SERVER calls verifyProof() for cryptographic
+ *     validity, then claims the nonce atomically (replay table) before
+ *     authorizing. verifyProof() alone never rejects replays.
  *   - At enrollment the phone hands over K_cred once, inside the window the
  *     holder opens, and the reader wraps it under the secret YOU pass to
  *     setEnrollment(on, readerSecret) — never raw, never logged. Unwrap it
- *     with the same wrapKeyHex-derived pad; then the server requires that
- *     tap's CHALLENGE proof to verify under it before storing it.
+ *     with unwrapKeyHex(); then the server requires that tap's CHALLENGE
+ *     proof to verify under it before storing it.
+ *   - Authoritative security contract: docs/SECURITY.md (replay, RNG,
+ *     wrap-entropy, relay limits). Host tests pin behavior, not security.
  *
  * Pure C++ (no Arduino headers): time is injected per call, so the whole
  * "one event per tap" contract is host-testable. On device pass millis();
@@ -46,7 +49,10 @@ class HceReader {
 public:
     /** One identified tap. `proof` carries the server-bound relay data. */
     struct Tap {
-        std::string credentialId;  // MIFARE hex UID, or the HCE application id
+        std::string credentialId;  // CLAIMED id: MIFARE hex UID, or the HCE application id
+        // How the id was captured. isHce is the convenience mirror of
+        // (kind == CredentialKind::Hce); prefer kind in new code.
+        CredentialKind kind = CredentialKind::Physical;
         bool isHce = false;        // true => identity came from the APDU exchange
         HceProof proof;            // relay transcript (meaningful only when isHce)
     };
@@ -68,6 +74,13 @@ public:
      * fills `out`; returns false otherwise (no credential, resting card,
      * or cooldown). Call with the current millis() — and call it
      * unconditionally: the false path is what notices the card left.
+     *
+     * The accepted tap is IDENTIFIED, not authenticated: for HCE taps the
+     * credentialId is the phone's claim and proof is the UNVERIFIED relay.
+     * The server must verifyProof() + enforce single-use nonces before the
+     * app authorizes anything (see docs/SECURITY.md). Physical UIDs are
+     * compatibility identifiers (clonable), never equivalent assurance.
+     * On false, `out` is left untouched.
      */
     bool read(Tap& out, uint32_t nowMs) {
         std::string id;
@@ -79,8 +92,16 @@ public:
             return false;
         }
         out.credentialId = id;
-        out.isHce = reader_.lastKind() != nullptr &&
-                    std::string(reader_.lastKind()) == "hce";
+        // Preferred: typed kind. Legacy custom transports (pre-2.0) override
+        // only the string lastKind(), so fall back to it when kind() still
+        // reports Physical.
+        CredentialKind kind = reader_.kind();
+        if (kind == CredentialKind::Physical && reader_.lastKind() != nullptr &&
+            std::string(reader_.lastKind()) == "hce") {
+            kind = CredentialKind::Hce;
+        }
+        out.kind = kind;
+        out.isHce = (kind == CredentialKind::Hce);
         out.proof = reader_.lastProof();
         if (!out.isHce) {
             out.proof.clear();
@@ -93,13 +114,24 @@ public:
      * the phone's key (ENROLL) and wrap it with `wrapSecret` for the
      * pair call. Off = normal taps never ask a phone for its key.
      * Also resets the debounce state so a mode switch never eats a tap.
+     *
+     * wrapSecret is THIS reader's key-encryption secret: it MUST be
+     * high-entropy (>= WRAP_SECRET_MIN_BYTES random bytes), unique per
+     * device, and never logged/stored with the wrapped keys. Human
+     * passwords do not qualify (offline-guessing weakness — see
+     * docs/SECURITY.md). Cleared when turned off.
      */
     void setEnrollment(bool on, const std::string& wrapSecret = std::string()) {
         reader_.setEnrollment(on, wrapSecret);
         debouncer_.reset();
     }
 
-    /** True when the underlying reader's last probe answered. */
+    /**
+     * Radio health only: true when the underlying reader's last probe
+     * answered. It says nothing about NFC link quality or whether a
+     * phone can authenticate — present it as "radio degraded", never as
+     * proof the credential system is operational.
+     */
     bool healthy() const { return reader_.healthy(); }
 
     /** Short label of the underlying reader, for the log. */
@@ -132,7 +164,7 @@ public:
     /** The AID your phone's HCE app must serve, e.g. F0010203040506. */
     static const uint8_t* aid() { return AID; }
     static size_t aidLen() { return AID_LEN; }
-    /** Challenge nonce length in bytes (8). */
+    /** Challenge nonce length in bytes (16). */
     static size_t nonceLen() { return NONCE_LEN; }
     /** HMAC-SHA256 length in bytes (32). */
     static size_t macLen() { return HMAC_LEN; }
@@ -152,6 +184,11 @@ public:
      * HMAC-SHA256(K_cred, credentialId || nonce) and compare in constant
      * time. This is where the per-credential key is used — never on the
      * reader. Reject when it returns false.
+     *
+     * Establishes cryptographic validity ONLY. Freshness/single-use
+     * (replay table, claimed atomically) and the authorization decision
+     * are separate backend/app steps — see docs/SECURITY.md. A true
+     * result is not proximity proof.
      */
     static bool verifyProof(const HceProof& proof, const std::string& credentialId,
                             const uint8_t credKey[KEY_LEN]) {
@@ -171,6 +208,29 @@ public:
     }
     static size_t fromHex(const std::string& hex, uint8_t* out, size_t cap) {
         return rc522hce::unhex(hex, out, cap);
+    }
+
+    /** v1 key-wrap / unwrap (server-side unwrap mirror; see HceProtocol.h). */
+    static std::string wrapKeyHex(const std::string& readerSecret,
+                                  const std::string& credId,
+                                  const std::string& keyNonceHex,
+                                  const uint8_t key[KEY_LEN]) {
+        return rc522hce::wrapKeyHex(readerSecret, credId, keyNonceHex, key);
+    }
+    static size_t unwrapKeyHex(const std::string& readerSecret,
+                               const std::string& credId,
+                               const std::string& keyNonceHex,
+                               const std::string& wrappedHex,
+                               uint8_t keyOut[KEY_LEN]) {
+        return rc522hce::unwrapKeyHex(readerSecret, credId, keyNonceHex, wrappedHex, keyOut);
+    }
+
+    /** Protocol/key-wrap versions and wrap-secret entropy floor. */
+    static uint32_t protocolVersion() { return PROTOCOL_VERSION; }
+    static uint32_t keyWrapVersion() { return KEY_WRAP_VERSION; }
+    /** Stable log name for a credential kind ("physical"/"hce"). */
+    static const char* kindName(CredentialKind kind) {
+        return credentialKindName(kind);
     }
 
     /** Shared interop test vector — prove a new phone app/backend matches. */

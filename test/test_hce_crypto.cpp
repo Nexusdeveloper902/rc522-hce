@@ -23,10 +23,11 @@ static void vectorKey(uint8_t key[32]) {
 }
 
 static const char kVectorCred[] = "PLS-K3Y7V3CT0R5Z";
-static const uint8_t kVectorNonce[8] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF};
+static const uint8_t kVectorNonce[NONCE_LEN] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+                                                0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F};
 static const uint8_t kVectorMac[32] = {
-    0xba, 0x6d, 0x0f, 0xbf, 0x51, 0x06, 0xf7, 0x92, 0x57, 0x72, 0x78, 0x19, 0xd1, 0x9a, 0x17, 0xb7,
-    0xe1, 0x5a, 0xbc, 0x4b, 0x8a, 0x0d, 0x1b, 0xfe, 0x71, 0xcd, 0x76, 0x09, 0x04, 0x88, 0xa2, 0x95};
+    0x70, 0xf3, 0x2d, 0x7b, 0x45, 0x81, 0x39, 0xd8, 0xf5, 0xf5, 0x22, 0xa7, 0x31, 0x4c, 0x31, 0x20,
+    0x5e, 0xca, 0x50, 0x61, 0x9a, 0x5d, 0x26, 0xdc, 0x46, 0x6d, 0x7d, 0x5b, 0x60, 0xaa, 0xb1, 0x54};
 
 // --- SHA-256 known answers (FIPS 180-4) -----------------------------------------
 
@@ -90,9 +91,9 @@ void test_hmac_shared_vector_is_the_phone_answer(void) {
     // reproduces the literal MAC bytes the phone put on the wire.
     uint8_t key[32];
     vectorKey(key);
-    uint8_t msg[16 + 8];
+    uint8_t msg[16 + NONCE_LEN];
     memcpy(msg, kVectorCred, 16);
-    memcpy(msg + 16, kVectorNonce, 8);
+    memcpy(msg + 16, kVectorNonce, NONCE_LEN);
     uint8_t mac[32];
     hmacSha256(key, 32, msg, sizeof(msg), mac);
     TEST_ASSERT_EQUAL_UINT8_ARRAY(kVectorMac, mac, 32);
@@ -101,21 +102,21 @@ void test_hmac_shared_vector_is_the_phone_answer(void) {
 void test_hmac_wrong_key_nonce_or_credential_changes_the_mac(void) {
     uint8_t key[32];
     vectorKey(key);
-    uint8_t msg[24];
+    uint8_t msg[16 + NONCE_LEN];
     uint8_t mac[32];
 
     memcpy(msg, kVectorCred, 16);
-    memcpy(msg + 16, kVectorNonce, 8);
+    memcpy(msg + 16, kVectorNonce, NONCE_LEN);
 
     key[0] ^= 0x01;  // wrong key
-    hmacSha256(key, 32, msg, 24, mac);
+    hmacSha256(key, 32, msg, sizeof(msg), mac);
     TEST_ASSERT_FALSE(memcmp(mac, kVectorMac, 32) == 0);
     key[0] ^= 0x01;
 
-    msg[23] ^= 0x01;  // wrong nonce
-    hmacSha256(key, 32, msg, 24, mac);
+    msg[sizeof(msg) - 1] ^= 0x01;  // wrong nonce
+    hmacSha256(key, 32, msg, sizeof(msg), mac);
     TEST_ASSERT_FALSE(memcmp(mac, kVectorMac, 32) == 0);
-    msg[23] ^= 0x01;
+    msg[sizeof(msg) - 1] ^= 0x01;
 
     msg[15] = 'Y';  // another credential id
     hmacSha256(key, 32, msg, 24, mac);
@@ -149,58 +150,97 @@ void test_hmac_empty_key_and_message_do_not_crash(void) {
 // --- Key wrap (pairing) -------------------------------------------------------------
 
 void test_key_wrap_matches_the_shared_vector(void) {
-    // Same literal the server test pins: reader key
-    // "test-secret-000000000000000001", key nonce 000102..0f.
+    // Same literal the server test pins (computed outside this code with
+    // an independent ChaCha20-Poly1305): reader key
+    // "test-secret-000000000000000001", key nonce 12 bytes 00..0b.
     uint8_t key[32];
     vectorKey(key);
     const std::string wrapped = wrapKeyHex(
-        "test-secret-000000000000000001", kVectorCred, "000102030405060708090a0b0c0d0e0f", key);
-    TEST_ASSERT_EQUAL_STRING("c5bb9fe15dff66a8636366dd4e73e0a3146601e3b3c36472961de142a9a914c2",
+        "test-secret-000000000000000001", kVectorCred, "000102030405060708090a0b", key);
+    TEST_ASSERT_EQUAL_STRING("000102030405060708090a0bd525e39925f68721c72478ce0d25a8078efb99ee6974f2cd8dad8c872882faa4dfcb78880fbc7ee165be05086565530e",
                              wrapped.c_str());
+    TEST_ASSERT_EQUAL_UINT32(120, (uint32_t)wrapped.size());  // 24 + 64 + 32
 }
 
 void test_key_wrap_is_bound_to_reader_credential_and_nonce(void) {
     uint8_t key[32];
     vectorKey(key);
     const std::string base = wrapKeyHex(
-        "test-secret-000000000000000001", kVectorCred, "000102030405060708090a0b0c0d0e0f", key);
+        "test-secret-000000000000000001", kVectorCred, "000102030405060708090a0b", key);
     TEST_ASSERT_TRUE(base != wrapKeyHex("another-reader-key", kVectorCred,
-                                        "000102030405060708090a0b0c0d0e0f", key));
+                                        "000102030405060708090a0b", key));
     TEST_ASSERT_TRUE(base != wrapKeyHex("test-secret-000000000000000001", "PLS-000000000000",
-                                        "000102030405060708090a0b0c0d0e0f", key));
+                                        "000102030405060708090a0b", key));
     TEST_ASSERT_TRUE(base != wrapKeyHex("test-secret-000000000000000001", kVectorCred,
-                                        "ffffffffffffffffffffffffffffffff", key));
+                                        "ffffffffffffffffffffffff", key));
     // Never the key itself.
     TEST_ASSERT_TRUE(base != toHex(key, 32));
 }
 
 void test_key_wrap_is_deterministic_and_reversible(void) {
-    // Same inputs => same wrap; XOR with the same pad recovers the key
-    // (this is exactly what the server does to unwrap).
+    // Same inputs => same wrap; AEAD-decrypt with the same secret recovers
+    // the key (this is exactly what the server does to unwrap).
     uint8_t key[32];
     vectorKey(key);
-    const std::string a = wrapKeyHex("s3cret", "CRED-1", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", key);
-    const std::string b = wrapKeyHex("s3cret", "CRED-1", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", key);
+    const std::string a = wrapKeyHex("s3cret", "CRED-1", "aaaaaaaaaaaaaaaaaaaaaaaa", key);
+    const std::string b = wrapKeyHex("s3cret", "CRED-1", "aaaaaaaaaaaaaaaaaaaaaaaa", key);
     TEST_ASSERT_EQUAL_STRING(a.c_str(), b.c_str());
-    TEST_ASSERT_EQUAL_UINT32(64, (uint32_t)a.size());
+    TEST_ASSERT_EQUAL_UINT32(120, (uint32_t)a.size());
 
-    // Round-trip: unwrap with the same pad.
-    const std::string label = std::string("pulse-hce-key-wrap/v1\n") + "CRED-1\n" +
-                              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    uint8_t pad[32];
-    hmacSha256(reinterpret_cast<const uint8_t*>("s3cret"), 6,
-               reinterpret_cast<const uint8_t*>(label.data()), label.size(), pad);
     uint8_t recovered[32];
-    for (int i = 0; i < 32; i++) {
-        unsigned hi = a[2 * i] >= 'a' ? (unsigned)(a[2 * i] - 'a' + 10) : (unsigned)(a[2 * i] - '0');
-        unsigned lo = a[2 * i + 1] >= 'a' ? (unsigned)(a[2 * i + 1] - 'a' + 10) : (unsigned)(a[2 * i + 1] - '0');
-        recovered[i] = (uint8_t)((hi << 4) | lo) ^ pad[i];
-    }
+    TEST_ASSERT_EQUAL_size_t(32, unwrapKeyHex("s3cret", "CRED-1", "aaaaaaaaaaaaaaaaaaaaaaaa",
+                                              a, recovered));
     TEST_ASSERT_EQUAL_UINT8_ARRAY(key, recovered, 32);
+    memset(recovered, 0, sizeof(recovered));
+    memset(key, 0, sizeof(key));
 }
 
-void test_key_wrap_null_key_is_empty(void) {
-    TEST_ASSERT_TRUE(wrapKeyHex("s", "c", "n", nullptr).empty());
+void test_key_wrap_rejects_malformed_inputs(void) {
+    uint8_t key[32];
+    vectorKey(key);
+    TEST_ASSERT_TRUE(wrapKeyHex("s", "c", "n", nullptr).empty());  // null key
+    TEST_ASSERT_TRUE(wrapKeyHex("s", "c", "zzzz", key).empty());   // bad nonce hex
+    TEST_ASSERT_TRUE(wrapKeyHex("s", "c", "aabbcc", key).empty());  // short nonce (3 B, not 12)
+    TEST_ASSERT_TRUE(wrapKeyHex("s", "c", "000102030405060708090a0b0c0d0e0f", key).empty());  // 16 B, not 12
+}
+
+void test_key_unwrap_fails_closed_on_tamper(void) {
+    // AEAD: any tampering or wrong secret fails closed (tag check) —
+    // the v1 construction's silent-corruption class is gone.
+    uint8_t key[32];
+    vectorKey(key);
+    const std::string wrapped = wrapKeyHex(
+        "test-secret-000000000000000001", kVectorCred, "000102030405060708090a0b", key);
+    uint8_t out[32];
+    TEST_ASSERT_EQUAL_size_t(32, unwrapKeyHex("test-secret-000000000000000001", kVectorCred,
+                                              "000102030405060708090a0b", wrapped, out));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(key, out, 32);
+    // Wrong secret.
+    memset(out, 0xAA, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t(0, unwrapKeyHex("wrong-secret", kVectorCred,
+                                             "000102030405060708090a0b", wrapped, out));
+    // Flipped ciphertext byte.
+    std::string flipped = wrapped;
+    flipped[30] = (flipped[30] == 'a') ? 'b' : 'a';
+    memset(out, 0xAA, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t(0, unwrapKeyHex("test-secret-000000000000000001", kVectorCred,
+                                             "000102030405060708090a0b", flipped, out));
+    // Flipped tag byte.
+    std::string badTag = wrapped;
+    badTag[100] = (badTag[100] == 'a') ? 'b' : 'a';
+    TEST_ASSERT_EQUAL_size_t(0, unwrapKeyHex("test-secret-000000000000000001", kVectorCred,
+                                             "000102030405060708090a0b", badTag, out));
+    // Spliced nonce (leading nonce must match the out-of-band keyNonceHex).
+    TEST_ASSERT_EQUAL_size_t(0, unwrapKeyHex("test-secret-000000000000000001", kVectorCred,
+                                             "ffffffffffffffffffffffff", wrapped, out));
+    // Malformed shape / null out.
+    TEST_ASSERT_EQUAL_size_t(0, unwrapKeyHex("test-secret-000000000000000001", kVectorCred,
+                                             "000102030405060708090a0b", "zzzz", out));
+    TEST_ASSERT_EQUAL_size_t(0, unwrapKeyHex("test-secret-000000000000000001", kVectorCred,
+                                             "000102030405060708090a0b",
+                                             wrapped.substr(0, 118), out));
+    TEST_ASSERT_EQUAL_size_t(0, unwrapKeyHex("s", "c", "n", wrapped, nullptr));
+    memset(key, 0, sizeof(key));
 }
 
 // --- Portable RNG seam (fillRandomBytes) -------------------------------------------
@@ -223,18 +263,19 @@ void test_fill_random_bytes_is_little_endian_per_word(void) {
 }
 
 void test_fill_random_bytes_spans_words_for_nonce_lengths(void) {
-    // 8-byte CHALLENGE nonce + 16-byte wrap nonce: multi-word fill, exact bytes.
+    // 16-byte CHALLENGE nonce + 12-byte wrap nonce: multi-word fill, exact bytes.
     g_stubCalls = 0;
-    uint8_t nonce[8] = {0};
+    uint8_t nonce[NONCE_LEN] = {0};
     fillRandomBytes(nonce, sizeof(nonce), stubWordSeq);
-    const uint8_t want8[] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
-    TEST_ASSERT_EQUAL_UINT8_ARRAY(want8, nonce, sizeof(nonce));
+    const uint8_t want16[] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+                              0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10};
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(want16, nonce, sizeof(nonce));
 
-    uint8_t keyNonce[16] = {0};
+    uint8_t keyNonce[KEY_NONCE_LEN] = {0};
     fillRandomBytes(keyNonce, sizeof(keyNonce), stubWordSeq);
-    const uint8_t want16[] = {0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
-                              0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
-    TEST_ASSERT_EQUAL_UINT8_ARRAY(want16, keyNonce, sizeof(keyNonce));
+    const uint8_t want12[] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+                              0x09, 0x0A, 0x0B, 0x0C};
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(want12, keyNonce, sizeof(keyNonce));
 }
 
 void test_fill_random_bytes_handles_partial_tail_and_nulls(void) {
@@ -248,6 +289,117 @@ void test_fill_random_bytes_handles_partial_tail_and_nulls(void) {
     fillRandomBytes(buf, sizeof(buf), nullptr);  // null source: buffer untouched
     const uint8_t untouched[] = {0xAA, 0xAA, 0xAA, 0xAA};
     TEST_ASSERT_EQUAL_UINT8_ARRAY(untouched, buf, sizeof(buf));
+}
+
+// --- ChaCha20-Poly1305 (RFC 8439 vectors, external to this code) ---------------
+
+void test_chacha20_block_matches_rfc8439_section_2_3_2(void) {
+    // Key 00..1f, nonce 00000009:0000004a:00000000, counter 1.
+    uint8_t key[32];
+    for (int i = 0; i < 32; i++) key[i] = (uint8_t)i;
+    const uint8_t nonce[12] = {0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x4a,
+                               0x00, 0x00, 0x00, 0x00};
+    uint8_t out[64];
+    chacha20Block(key, 1, nonce, out);
+    TEST_ASSERT_EQUAL_STRING("10f1e7e4d13b5915500fdd1fa32071c4c7d1f4c733c068030422aa9ac3d46c4e"
+                             "d2826446079faa0914c2d705d98b02a2b5129cd1de164eb9cbd083e8a2503c4e",
+                             toHex(out, sizeof(out)).c_str());
+}
+
+void test_chacha20_encrypt_matches_rfc8439_section_2_4_2(void) {
+    // Key 00..1f, nonce 00000000:0000004a:00000000, counter 1, "Sunscreen" pt.
+    uint8_t key[32];
+    for (int i = 0; i < 32; i++) key[i] = (uint8_t)i;
+    const uint8_t nonce[12] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x4a,
+                               0x00, 0x00, 0x00, 0x00};
+    static const char kPt[] =
+        "Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the "
+        "future, sunscreen would be it.";
+    const size_t ptLen = sizeof(kPt) - 1;
+    uint8_t ct[128] = {0};
+    uint8_t tag[16];
+    chacha20Poly1305Encrypt(key, nonce, nullptr, 0,
+                            reinterpret_cast<const uint8_t*>(kPt), ptLen, ct, tag);
+    // Ciphertext prefix per RFC 8439 §2.4.2 (6e2e359a…).
+    TEST_ASSERT_EQUAL_STRING("6e2e359a2568f98041ba0728dd0d6981e97e7aec1d4360c20a27afccfd9fae0b"
+                             "f91b65c5524733ab8f593dabcd62b3571639d624e65152ab8f530c359f0861d8",
+                             toHex(ct, 64).c_str());
+    // Decrypt round-trips.
+    uint8_t back[128] = {0};
+    TEST_ASSERT_TRUE(chacha20Poly1305Decrypt(key, nonce, nullptr, 0, ct, ptLen, tag, back));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(kPt, back, ptLen);
+}
+
+void test_aead_short_message_with_aad_round_trip(void) {
+    // Short (sub-block) message + short AAD: padding paths on both sides.
+    // Poly1305 itself is pinned transitively by the §2.8.2 tag below.
+    uint8_t key[32];
+    for (int i = 0; i < 32; i++) key[i] = (uint8_t)(0xC0 + i);
+    const uint8_t nonce[12] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
+    static const uint8_t kAad[] = {0xDE, 0xAD, 0xBE, 0xEF, 0x01};
+    static const char kMsg[] = "Cryptographic Forum Research Group";
+    uint8_t ct[64] = {0};
+    uint8_t tag[16];
+    chacha20Poly1305Encrypt(key, nonce, kAad, sizeof(kAad),
+                            reinterpret_cast<const uint8_t*>(kMsg), sizeof(kMsg) - 1, ct, tag);
+    uint8_t back[64] = {0};
+    TEST_ASSERT_TRUE(chacha20Poly1305Decrypt(key, nonce, kAad, sizeof(kAad), ct,
+                                             sizeof(kMsg) - 1, tag, back));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(kMsg, back, sizeof(kMsg) - 1);
+    // Ciphertext differs from plaintext (actually encrypted).
+    TEST_ASSERT_FALSE(memcmp(ct, kMsg, sizeof(kMsg) - 1) == 0);
+}
+
+void test_aead_matches_rfc8439_section_2_8_2(void) {
+    // Key 8081…9f, nonce 07000000:40414243:44454647, AAD 50515253c0…c7,
+    // "Sunscreen" plaintext → ct d31a8d34…6116, tag 1ae10b59….
+    uint8_t key[32];
+    for (int i = 0; i < 32; i++) key[i] = (uint8_t)(0x80 + i);
+    const uint8_t nonce[12] = {0x07, 0x00, 0x00, 0x00, 0x40, 0x41, 0x42, 0x43,
+                               0x44, 0x45, 0x46, 0x47};
+    const uint8_t aad[12] = {0x50, 0x51, 0x52, 0x53, 0xc0, 0xc1, 0xc2, 0xc3,
+                             0xc4, 0xc5, 0xc6, 0xc7};
+    static const char kPt[] =
+        "Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the "
+        "future, sunscreen would be it.";
+    const size_t ptLen = sizeof(kPt) - 1;
+    uint8_t ct[128] = {0};
+    uint8_t tag[16];
+    chacha20Poly1305Encrypt(key, nonce, aad, sizeof(aad),
+                            reinterpret_cast<const uint8_t*>(kPt), ptLen, ct, tag);
+    TEST_ASSERT_EQUAL_STRING("d31a8d34648e60db7b86afbc53ef7ec2a4aded51296e08fea9e2b5a736ee62d6"
+                             "3dbea45e8ca9671282fafb69da92728b1a71de0a9e060b2905d6a5b67ecd3b36"
+                             "92ddbd7f2d778b8c9803aee328091b58fab324e4fad675945585808b4831d7bc"
+                             "3ff4def08e4b7a9de576d26586cec64b6116",
+                             toHex(ct, ptLen).c_str());
+    TEST_ASSERT_EQUAL_STRING("1ae10b594f09e26a7e902ecbd0600691", toHex(tag, 16).c_str());
+    // Decrypt accepts; flipped tag rejects and zeroes the plaintext buffer.
+    uint8_t back[128];
+    memset(back, 0xAA, sizeof(back));
+    TEST_ASSERT_TRUE(chacha20Poly1305Decrypt(key, nonce, aad, sizeof(aad), ct, ptLen, tag, back));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(kPt, back, ptLen);
+    uint8_t badTag[16];
+    memcpy(badTag, tag, 16);
+    badTag[0] ^= 0x01;
+    memset(back, 0xAA, sizeof(back));
+    TEST_ASSERT_FALSE(chacha20Poly1305Decrypt(key, nonce, aad, sizeof(aad), ct, ptLen, badTag, back));
+    static const uint8_t kZero[128] = {0};
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(kZero, back, ptLen);
+    // Wrong AAD rejects too.
+    uint8_t badAad[12];
+    memcpy(badAad, aad, sizeof(aad));
+    badAad[0] ^= 0x01;
+    TEST_ASSERT_FALSE(chacha20Poly1305Decrypt(key, nonce, badAad, sizeof(aad), ct, ptLen, tag, back));
+}
+
+void test_aead_handles_empty_aad_and_plaintext(void) {
+    uint8_t key[32] = {0};
+    uint8_t nonce[12] = {0};
+    uint8_t ct[1] = {0xAA};
+    uint8_t tag[16];
+    chacha20Poly1305Encrypt(key, nonce, nullptr, 0, nullptr, 0, ct, tag);
+    uint8_t back[1] = {0xAA};
+    TEST_ASSERT_TRUE(chacha20Poly1305Decrypt(key, nonce, nullptr, 0, nullptr, 0, tag, back));
 }
 
 void runHceCryptoTests() {
@@ -264,8 +416,14 @@ void runHceCryptoTests() {
     RUN_TEST(test_key_wrap_matches_the_shared_vector);
     RUN_TEST(test_key_wrap_is_bound_to_reader_credential_and_nonce);
     RUN_TEST(test_key_wrap_is_deterministic_and_reversible);
-    RUN_TEST(test_key_wrap_null_key_is_empty);
+    RUN_TEST(test_key_wrap_rejects_malformed_inputs);
+    RUN_TEST(test_key_unwrap_fails_closed_on_tamper);
     RUN_TEST(test_fill_random_bytes_is_little_endian_per_word);
     RUN_TEST(test_fill_random_bytes_spans_words_for_nonce_lengths);
     RUN_TEST(test_fill_random_bytes_handles_partial_tail_and_nulls);
+    RUN_TEST(test_chacha20_block_matches_rfc8439_section_2_3_2);
+    RUN_TEST(test_chacha20_encrypt_matches_rfc8439_section_2_4_2);
+    RUN_TEST(test_aead_short_message_with_aad_round_trip);
+    RUN_TEST(test_aead_matches_rfc8439_section_2_8_2);
+    RUN_TEST(test_aead_handles_empty_aad_and_plaintext);
 }

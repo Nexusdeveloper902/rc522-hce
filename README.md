@@ -8,7 +8,7 @@ two credential kinds:
 - **physical** — a MIFARE Classic UID off the RF layer (untouched path);
 - **hce** — an Android phone answering as an ISO-DEP target. Identity comes from an
   application-level exchange (never the RF UID, which Android randomizes per tap):
-  `SELECT AID F0010203040506` + random 8-byte `CHALLENGE`, answered with
+  `SELECT AID F0010203040506` + random 16-byte `CHALLENGE`, answered with
   `len + credId + HMAC-SHA256(K_cred, credId || nonce) + 9000`.
 
 The reader holds **no HCE key** and verifies nothing — it relays its nonce + the
@@ -32,8 +32,8 @@ src/
   HceReader.h           THE public API: configure once, then just read()
                         (wraps transport + debounce; pure C++, host-tested)
   HceProtocol.h / .cpp  pure C++: APDU builders/parsers, SHA-256/HMAC,
-                        key-wrap, ISO-DEP frame helpers (host-testable)
-  NfcReader.h           transport interface + HceProof relay struct
+                        key-wrap/unwrap, versions, ISO-DEP frame helpers (host-testable)
+  NfcReader.h           transport interface + CredentialKind + HceProof relay struct
   Rc522HceReader.h      radio driver (MFRC522 over SPI) — device only
   Rc522HceConfig.h      PINS/TIMINGS/AID configuration — build flags, no
                         source edits (board presets auto-detected)
@@ -42,9 +42,9 @@ src/
                         existing codebase without renaming call sites
   CardDebouncer.h       re-read suppression (pure C++, host-tested)
   MockNfcReader.h       hardware-free transport for dev/tests (pure C++)
-test/                   95 host-side Unity tests (`pio test -e native`)
+test/                   106 host-side Unity tests (`pio test -e native`)
 examples/               Arduino sketches (BasicTap, HceEnroll)
-docs/                   protocol spec + wiring guide + API reference (API.md)
+docs/                   protocol spec + wiring guide + API reference (API.md) + security model (SECURITY.md)
 ```
 
 ## Install
@@ -103,12 +103,12 @@ void setup() {
 
 void loop() {
     rc522hce::HceReader::Tap tap;
-    if (reader.read(tap, millis())) {              // …then just read
+    if (reader.read(tap, millis())) {              // …then just read (identified, not yet authenticated)
         if (tap.isHce) {
             // POST tap.credentialId + tap.proof.nonceHex + tap.proof.macHex
-            // to your server; it recomputes HMAC-SHA256(K_cred, credId || nonce).
+            // to your server; it verifies + checks replay before authorizing.
         } else {
-            // physical card: tap.credentialId is the uppercase hex UID.
+            // physical card: tap.credentialId is the uppercase hex UID (compatibility id, clonable).
         }
     }
 }
@@ -129,7 +129,8 @@ place the credential key exists outside the phone:
 ```cpp
 // credKey = the stored 32-byte key for tap.credentialId
 if (!rc522hce::HceReader::verifyProof(tap.proof, tap.credentialId, credKey)) {
-    // reject — wrong key, tampered MAC, replayed or impossible transcript
+    // reject — wrong key, tampered MAC, or impossible transcript.
+    // (Freshness/single-use is a separate atomic backend step — see docs/SECURITY.md.)
 }
 ```
 
@@ -155,8 +156,10 @@ rc522hce::Rc522HceReader reader(/*ss=*/13, /*rst=*/255 /*3V3-strapped*/,
 ```
 
 Randomness per board: on ESP32 the driver uses the hardware RNG
-(`esp_random`) automatically. Other chips use a best-effort auto-seeded
-fallback, and production firmware should inject its own noise source:
+(`esp_random`) automatically. Other chips default to a best-effort
+hobby-grade fallback that is NOT approved for production credentials —
+production firmware on RNG-less chips MUST inject an approved source
+(see `docs/SECURITY.md` "Randomness policy"):
 
 ```cpp
 uint32_t myNoise() { /* floating analog pin, radio RSSI, TRNG chip… */ return ...; }
@@ -164,8 +167,10 @@ rc522hce::Rc522HceReader reader(10, 9, 13, 12, 11, &Serial,
                                 rc522hce::Rc522HceOptions(), myNoise);
 ```
 
-The protocol, framing, debounce and retry logic is chip-independent pure C++
-and behaves identically on every board — only pins and the RNG source vary.
+The protocol, framing, debounce and retry logic is chip-independent pure C++;
+only pins and the RNG source vary by board. Host compilation does not imply
+identical behavior on every MCU/compiler — validate on the target toolchains
+before release.
 
 Without hardware (dev/tests): `rc522hce::MockNfcReader` implements the same
 `NfcReader` interface — wrap it in `HceReader` exactly like the radio.
@@ -250,20 +255,20 @@ header `HceReader.h`:
 |---|---|
 | `HceReader reader(transport)` / `reader.begin()` / `reader.read(tap, millis())` | the whole reader app: one event per physical tap |
 | `tap.credentialId` | the credential: MIFARE hex UID, or the HCE application id |
-| `tap.isHce`, `tap.proof.nonceHex`, `tap.proof.macHex` | how it was identified + the transcript to relay |
-| `tap.proof.keyWrappedHex`, `tap.proof.keyNonceHex` | enrollment taps only: the phone's key, wrapped |
-| `reader.setEnrollment(on, readerSecret)` | turn enrollment mode on; the only secret the reader holds |
+| `tap.isHce`, `tap.kind`, `tap.proof.nonceHex`, `tap.proof.macHex` | how it was identified (typed kind + `isHce` convenience) + the UNVERIFIED transcript to relay; server acceptance is a separate step |
+| `tap.proof.keyWrappedHex`, `tap.proof.keyNonceHex` | enrollment taps only: the phone's key, wrapped (v1 legacy — see `docs/SECURITY.md`) |
+| `reader.setEnrollment(on, readerSecret)` | turn enrollment mode on; the only secret the reader holds (high-entropy, per-device — see `docs/SECURITY.md`) |
 | `reader.setAid(bytes, len)`, `selectedAid()`, `selectedAidLen()` | change the AID at runtime; report what a phone must serve |
-| `HceReader::verifyProof(proof, credId, credKey)` | **backend**: verify a relayed tap, constant-time |
+| `HceReader::verifyProof(proof, credId, credKey)` | **backend**: cryptographic validity of a relayed tap, constant-time (freshness + authorization are separate — see `docs/SECURITY.md`) |
 | `HceReader::aid()`, `aidLen()` | the AID the phone's HCE app must serve (`F0010203040506`) |
-| `HceReader::nonceLen()`, `macLen()`, `keyLen()`, `maxCredentialLen()` | protocol lengths (8 / 32 / 32 / 32) |
+| `HceReader::nonceLen()`, `macLen()`, `keyLen()`, `maxCredentialLen()` | protocol lengths (16 / 32 / 32 / 32) |
 | `HceReader::statusWordName(sw1, sw2)` | `9000`, `6A82`, `6A88`, `6985`, `6700`, `6D00`, `6E00` — for operator-facing messages |
 | `HceReader::toHex()`, `HceReader::fromHex()` | wire transcripts and wrapped keys are hex |
 | `HceReader::selfCheckVector()` | true when the shared interop vector verifies |
 | `TestVector::*` | the pinned vector: credId, key, nonce, MAC, reader secret, wrapped key |
 | `buildSelectAid()`, `buildSelectAidWith()`, `buildChallenge()`, `buildEnroll()` | the exact APDU bytes (for custom transports) |
 | `parseSelectResponse()`, `parseChallengeResponse()`, `isKeyMissing()` | response classification |
-| `hmacSha256()`, `sha256Bytes()`, `wrapKeyHex()` | the crypto, dependency-free |
+| `hmacSha256()`, `sha256Bytes()`, `wrapKeyHex()` | the crypto, dependency-free (`unwrapKeyHex()` is the server-side mirror) |
 | `MockNfcReader`, `CardDebouncer` | hardware-free development, and the 1-tap rule |
 
 ### Where the HCE key lives
@@ -272,11 +277,11 @@ header `HceReader.h`:
   Neither the reader nor this library ever holds or transmits it raw.
 - At enrollment, the phone releases `K_cred` **once**, inside a window its holder opens;
   the reader wraps it under the `readerSecret` you passed to `setEnrollment()` and wipes
-  the copy. Unwrap it server-side by deriving the same pad
-  (`HMAC-SHA256(readerSecret, "pulse-hce-key-wrap/v1\n" || credId || "\n" || keyNonceHex)`)
-  and XOR-ing.
+  the copy. Unwrap it server-side with `unwrapKeyHex()` (same pad derivation + XOR).
 - Every tap afterwards: the reader relays `credId + nonce + mac` and your server calls
-  `HceReader::verifyProof(proof, credId, credKey)` — false means reject.
+  `HceReader::verifyProof(proof, credId, credKey)` for cryptographic validity, then
+  claims the nonce atomically (replay table) before authorizing — false means reject.
+  Full contract: [`docs/SECURITY.md`](docs/SECURITY.md).
 
 Verify a new phone app or backend against the pinned vector first
 (`pio test -e native` also runs it):
@@ -285,15 +290,15 @@ Verify a new phone app or backend against the pinned vector first
 |---|---|
 | `K_cred` | `000102…1f` |
 | `credId` | `PLS-K3Y7V3CT0R5Z` |
-| `nonce` | `0123456789abcdef` |
-| `MAC` | `ba6d0fbf5106f79257727819d19a17b7e15abc4b8a0d1bfe71cd76090488a295` |
+| `nonce` | `000102…0f` (16 bytes) |
+| `MAC` | `70f32d7b458139d8f5f522a7314c31205eca50619a5d26dc466d7d5b60aab154` |
 
 ## Phone-app contract
 
 Your Android HCE app must implement `docs/HCE_PROTOCOL.md`:
 
 - AID `F0010203040506`, `SELECT` → `HCE-OK 9000` (else `6A82`);
-- `CHALLENGE` (`80 10 00 00 08 + nonce`) → `len + credId + MAC + 9000`,
+- `CHALLENGE` (`80 10 00 00 10 + nonce`) → `len + credId + MAC + 9000`,
   with `MAC = HMAC-SHA256(K_cred, credId || nonce)`;
 - `ENROLL` (`80 20 00 00 20`) → `K_cred + 9000`, only inside the holder-opened
   enrollment window (else `6985`); no key yet → `6A88` on `CHALLENGE`.
@@ -304,23 +309,24 @@ Shared test vector (pinned in `test/` — verify your app against it):
 |---|---|
 | `K_cred` | `000102…1f` |
 | `credId` | `PLS-K3Y7V3CT0R5Z` |
-| `nonce` | `0123456789abcdef` |
-| `MAC` | `ba6d0fbf5106f79257727819d19a17b7e15abc4b8a0d1bfe71cd76090488a295` |
+| `nonce` | `000102…0f` (16 bytes) |
+| `MAC` | `70f32d7b458139d8f5f522a7314c31205eca50619a5d26dc466d7d5b60aab154` |
 
 ## Tests
 
 ```sh
-pio test -e native   # 95 tests, no board needed
+pio test -e native   # 106 tests, no board needed
 ```
 
 Seven suites: APDU wire contract (byte-exact builders, every parser shape),
 crypto trust contract (RFC 4231 + FIPS vectors + tamper properties +
-key-wrap + RNG seam), ISO-DEP RF contract (SAK, PCB classes, I-block
+key-wrap/unwrap + RNG seam + RFC 8439 ChaCha20-Poly1305 vectors), ISO-DEP RF contract (SAK, PCB classes, I-block
 stripping, block resync), debounce rules, the transport contract incl.
 simulated end-to-end HCE taps, the facade contract (one read() per
-physical tap, proof forwarding, enrollment, health), and the exposed
-protocol surface — that test file includes only `HceReader.h`, so the
-docs cannot promise something the API stops exposing.
+physical tap, typed kind incl. legacy-string fallback, proof forwarding,
+enrollment, health), and the exposed protocol surface (versions, kind,
+replay-is-server-side, unwrap) — that test file includes only `HceReader.h`,
+so the docs cannot promise something the API stops exposing.
 
 ## License
 

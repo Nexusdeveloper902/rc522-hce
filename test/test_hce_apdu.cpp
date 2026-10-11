@@ -48,28 +48,34 @@ void test_select_aid_constant_is_f_category(void) {
 // --- CHALLENGE builder --------------------------------------------------------
 
 void test_challenge_builder_is_byte_exact(void) {
-    const uint8_t nonce[8] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
-    uint8_t out[16];
+    const uint8_t nonce[NONCE_LEN] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+                                      0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F};
+    uint8_t out[32];
     const size_t n = buildChallenge(nonce, out, sizeof(out));
 
-    const uint8_t want[] = {0x80, 0x10, 0x00, 0x00, 0x08,
-                            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
+    const uint8_t want[] = {0x80, 0x10, 0x00, 0x00, 0x10,
+                            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+                            0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F};
     TEST_ASSERT_EQUAL_size_t(sizeof(want), n);
+    TEST_ASSERT_EQUAL_size_t(5 + NONCE_LEN, n);
     TEST_ASSERT_EQUAL_UINT8_ARRAY(want, out, sizeof(want));
 }
 
 void test_challenge_builder_embeds_any_nonce_verbatim(void) {
-    // The nonce is the anti-replay: whatever 8 bytes go in must come out verbatim.
-    const uint8_t nonce[8] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0xFF, 0x42, 0x13};
-    uint8_t out[16];
-    TEST_ASSERT_EQUAL_size_t(13, buildChallenge(nonce, out, sizeof(out)));
-    TEST_ASSERT_EQUAL_UINT8_ARRAY(nonce, out + 5, 8);
+    // The fresh nonce lets the server detect replays; whatever NONCE_LEN
+    // bytes go in must come out verbatim (replay rejection itself is
+    // server-side).
+    const uint8_t nonce[NONCE_LEN] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0xFF, 0x42, 0x13,
+                                      0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
+    uint8_t out[32];
+    TEST_ASSERT_EQUAL_size_t(5 + NONCE_LEN, buildChallenge(nonce, out, sizeof(out)));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(nonce, out + 5, NONCE_LEN);
 }
 
 void test_challenge_builder_rejects_short_null(void) {
-    uint8_t out[16];
-    const uint8_t nonce[8] = {0};
-    TEST_ASSERT_EQUAL_size_t(0, buildChallenge(nonce, out, 12));
+    uint8_t out[32];
+    const uint8_t nonce[NONCE_LEN] = {0};
+    TEST_ASSERT_EQUAL_size_t(0, buildChallenge(nonce, out, 5 + NONCE_LEN - 1));
     TEST_ASSERT_EQUAL_size_t(0, buildChallenge(nullptr, out, sizeof(out)));
     TEST_ASSERT_EQUAL_size_t(0, buildChallenge(nonce, nullptr, sizeof(out)));
 }
@@ -117,13 +123,14 @@ void test_select_parser_distinguishes_routing_from_framing(void) {
 
 // --- Shared interop vector (pinned in phone app + server + reader) ------------
 // Literal values computed OUTSIDE this code (Python hmac):
-//   K = 00 01 .. 1f, credId = "PLS-K3Y7V3CT0R5Z", nonce = 01 23 45 67 89 ab cd ef
+//   K = 00 01 .. 1f, credId = "PLS-K3Y7V3CT0R5Z", nonce = 00 01 .. 0f
 static const char kVectorCred[] = "PLS-K3Y7V3CT0R5Z";
-static const uint8_t kVectorNonce[8] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF};
+static const uint8_t kVectorNonce[NONCE_LEN] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+                                                0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F};
 static const uint8_t kVectorResponse[] = {
     0x10, 'P', 'L', 'S', '-', 'K', '3', 'Y', '7', 'V', '3', 'C', 'T', '0', 'R', '5', 'Z',
-    0xba, 0x6d, 0x0f, 0xbf, 0x51, 0x06, 0xf7, 0x92, 0x57, 0x72, 0x78, 0x19, 0xd1, 0x9a, 0x17, 0xb7,
-    0xe1, 0x5a, 0xbc, 0x4b, 0x8a, 0x0d, 0x1b, 0xfe, 0x71, 0xcd, 0x76, 0x09, 0x04, 0x88, 0xa2, 0x95,
+    0x70, 0xf3, 0x2d, 0x7b, 0x45, 0x81, 0x39, 0xd8, 0xf5, 0xf5, 0x22, 0xa7, 0x31, 0x4c, 0x31, 0x20,
+    0x5e, 0xca, 0x50, 0x61, 0x9a, 0x5d, 0x26, 0xdc, 0x46, 0x6d, 0x7d, 0x5b, 0x60, 0xaa, 0xb1, 0x54,
     0x90, 0x00};
 
 static void vectorKey(uint8_t key[32]) {
@@ -141,8 +148,8 @@ void test_challenge_parser_extracts_the_relay_proof(void) {
     TEST_ASSERT_EQUAL_size_t(51, sizeof(kVectorResponse));  // 1 + 16 + 32 + 2, per the spec
     TEST_ASSERT_EQUAL_STRING(kVectorCred, parsed.credId.c_str());
     // The relay proof is exactly what the server expects, hex-encoded.
-    TEST_ASSERT_EQUAL_STRING("0123456789abcdef", toHex(kVectorNonce, 8).c_str());
-    TEST_ASSERT_EQUAL_STRING("ba6d0fbf5106f79257727819d19a17b7e15abc4b8a0d1bfe71cd76090488a295",
+    TEST_ASSERT_EQUAL_STRING("000102030405060708090a0b0c0d0e0f", toHex(kVectorNonce, NONCE_LEN).c_str());
+    TEST_ASSERT_EQUAL_STRING("70f32d7b458139d8f5f522a7314c31205eca50619a5d26dc466d7d5b60aab154",
                              toHex(parsed.mac, 32).c_str());
 }
 
@@ -214,7 +221,7 @@ void test_challenge_parser_never_touches_the_rf_uid(void) {
 // --- ENROLL ---------------------------------------------------------------------
 
 void test_enroll_builder_is_byte_exact(void) {
-    uint8_t out[8];
+    uint8_t out[8];  // ENROLL is unchanged in v2 (5 bytes, Le = 32)
     const uint8_t want[] = {0x80, 0x20, 0x00, 0x00, 0x20};
     TEST_ASSERT_EQUAL_size_t(sizeof(want), buildEnroll(out, sizeof(out)));
     TEST_ASSERT_EQUAL_UINT8_ARRAY(want, out, sizeof(want));

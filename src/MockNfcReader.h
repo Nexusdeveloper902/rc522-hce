@@ -47,6 +47,8 @@ public:
 
     const char* label() const override { return "MOCK (host input)"; }
 
+    CredentialKind kind() const override { return CredentialKind::Physical; }
+
 private:
     std::string pendingId_;
 };

@@ -35,11 +35,11 @@ namespace Presence {
 
 using HceProof = rc522hce::HceProof;
 using NfcReader = rc522hce::NfcReader;
+using CredentialKind = rc522hce::CredentialKind;
 using HceReader = rc522hce::HceReader;
 using CardDebouncer = rc522hce::CardDebouncer;
 using MockNfcReader = rc522hce::MockNfcReader;
 using MockSerialNfcReader = rc522hce::MockNfcReader;  // historical name
-using HceReader = rc522hce::HceReader;
 
 #if defined(ARDUINO)
 using Rc522HceReader = rc522hce::Rc522HceReader;
@@ -61,9 +61,16 @@ using rc522hce::parseEnrollResponse;
 using rc522hce::hmacSha256;
 using rc522hce::sha256Bytes;
 using rc522hce::wrapKeyHex;
+using rc522hce::unwrapKeyHex;
+using rc522hce::chacha20Block;
+using rc522hce::chacha20Poly1305Encrypt;
+using rc522hce::chacha20Poly1305Decrypt;
+using rc522hce::credentialKindName;
+using rc522hce::credentialKindFromString;
 
 using rc522hce::SelectOutcome;
 using rc522hce::ChallengeResponse;
+using rc522hce::CredentialKind;
 
 using rc522hce::AID;
 using rc522hce::AID_LEN;
@@ -73,6 +80,11 @@ using rc522hce::HMAC_LEN;
 using rc522hce::MAX_CRED_LEN;
 using rc522hce::KEY_LEN;
 using rc522hce::KEY_NONCE_LEN;
+using rc522hce::AEAD_KEY_LEN;
+using rc522hce::AEAD_NONCE_LEN;
+using rc522hce::AEAD_TAG_LEN;
+using rc522hce::PROTOCOL_VERSION;
+using rc522hce::KEY_WRAP_VERSION;
 
 namespace TestVector = rc522hce::TestVector;  // namespace alias, not a using-decl
 }  // namespace Hce

@@ -8,10 +8,33 @@
 #pragma once
 
 #include <string>
+#include <stdint.h>
 
 #include "HceProtocol.h"  // KEY_LEN not needed here; HceProof lives below
 
 namespace rc522hce {
+
+// How a credential was captured. Typed so the compiler catches invalid
+// states; the historical string form ("physical"/"hce") survives only as
+// the deprecated lastKind() shim for already-deployed custom transports.
+enum class CredentialKind : uint8_t {
+    Physical = 0,  // MIFARE Classic UID off the RF layer (compatibility path)
+    Hce = 1        // Android HCE phone, identity from the APDU exchange
+};
+
+/** Stable wire/log name for a kind. Never returns nullptr. */
+inline const char* credentialKindName(CredentialKind kind) {
+    return kind == CredentialKind::Hce ? "hce" : "physical";
+}
+
+/** Parse a kind name. Unknown (including nullptr) maps to Physical. */
+inline CredentialKind credentialKindFromString(const char* name) {
+    if (name != nullptr && name[0] == 'h' && name[1] == 'c' && name[2] == 'e' &&
+        name[3] == '\0') {
+        return CredentialKind::Hce;
+    }
+    return CredentialKind::Physical;
+}
 
 // What an HCE tap carries to the backend. The reader does NOT verify the
 // phone (it holds no HCE key): it relays its own challenge nonce and the
@@ -51,18 +74,44 @@ public:
      *   hce      — an Android phone answering as an ISO-DEP target: the
      *              application-level credential id from the SELECT AID +
      *              CHALLENGE exchange (never the RF UID, which Android
-     *              randomizes per tap). lastKind() tells which one the last
-     *              successful poll returned ("physical" or "hce").
+     *              randomizes per tap). kind() tells which one the last
+     *              successful poll returned.
+     *
+     * Failure/lifetime contract (applies to every transport):
+     *   - On false, idOut is left untouched and kind()/lastKind()/
+     *     lastProof() still describe the last SUCCESSFUL poll (stale).
+     *     Only use them immediately after poll() returns true.
+     *   - lastProof() returns a borrowed reference valid until the next
+     *     poll(), setEnrollment(), setAid(), or destruction. Copy it if
+     *     it must outlive the next poll.
+     *   - poll() never throws and never blocks; radio drivers do their
+     *     retry/probe work inside the call on a non-blocking cadence.
      */
     virtual bool poll(std::string& idOut) = 0;
 
-    /** HOW the last successful poll's credential was captured. */
-    virtual const char* lastKind() const { return "physical"; }
+    /**
+     * HOW the last successful poll's credential was captured.
+     * Preferred over the string form below; custom transports written
+     * against pre-2.0 code that overrides only lastKind() still work (the facade
+     * falls back to the string when kind() reports Physical).
+     */
+    virtual CredentialKind kind() const { return CredentialKind::Physical; }
+
+    /**
+     * HOW the last successful poll's credential was captured.
+     * @deprecated Prefer kind(). Kept so pre-2.0 custom transports keep
+     * compiling and behaving; new code must override kind() instead.
+     * Only meaningful immediately after poll() returns true (otherwise
+     * stale — see poll()).
+     */
+    virtual const char* lastKind() const { return credentialKindName(kind()); }
 
     /**
      * The relayed HCE transcript of the last successful poll (empty for
      * physical cards). The reader does not verify it — the server does,
-     * with that credential's own key.
+     * with that credential's own key. Borrowed reference: valid until the
+     * next poll()/setEnrollment()/destruction; copy when it must outlive
+     * that. Stale after poll() returns false — see poll().
      */
     virtual const HceProof& lastProof() const {
         static const HceProof kNone;

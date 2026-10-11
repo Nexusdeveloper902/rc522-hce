@@ -24,7 +24,7 @@ void test_facade_exposes_the_protocol_surface(void) {
     TEST_ASSERT_NOT_NULL(HceReader::aid());
     TEST_ASSERT_EQUAL_size_t(7, HceReader::aidLen());
     TEST_ASSERT_EQUAL_UINT8(0xF0, HceReader::aid()[0]);
-    TEST_ASSERT_EQUAL_size_t(8, HceReader::nonceLen());
+    TEST_ASSERT_EQUAL_size_t(16, HceReader::nonceLen());
     TEST_ASSERT_EQUAL_size_t(32, HceReader::macLen());
     TEST_ASSERT_EQUAL_size_t(32, HceReader::maxCredentialLen());
     TEST_ASSERT_EQUAL_size_t(32, HceReader::keyLen());
@@ -68,11 +68,11 @@ void test_shared_vector_constants_stay_self_consistent(void) {
     uint8_t msg[64];
     memcpy(msg, TestVector::kCredId, strlen(TestVector::kCredId));
     const size_t credLen = strlen(TestVector::kCredId);
-    uint8_t nonce[8];
-    TEST_ASSERT_EQUAL_size_t(8, HceReader::fromHex(TestVector::kNonceHex, nonce, sizeof(nonce)));
-    memcpy(msg + credLen, nonce, 8);
+    uint8_t nonce[NONCE_LEN];
+    TEST_ASSERT_EQUAL_size_t(NONCE_LEN, HceReader::fromHex(TestVector::kNonceHex, nonce, sizeof(nonce)));
+    memcpy(msg + credLen, nonce, NONCE_LEN);
     uint8_t mac[32];
-    hmacSha256(key, 32, msg, credLen + 8, mac);
+    hmacSha256(key, 32, msg, credLen + NONCE_LEN, mac);
     TEST_ASSERT_EQUAL_STRING(TestVector::kMacHex, HceReader::toHex(mac, 32).c_str());
     memset(msg, 0, sizeof(msg));
     memset(key, 0, sizeof(key));
@@ -80,8 +80,7 @@ void test_shared_vector_constants_stay_self_consistent(void) {
 
 // --- Rejection: verification must fail closed -------------------------------------
 
-void test_verification_fails_closed(void) {
-    uint8_t key[32];
+void test_verification_fails_closed(void) {    uint8_t key[32];
     vectorKey(key);
     const std::string cred = TestVector::kCredId;
     const std::string nonce = TestVector::kNonceHex;
@@ -92,7 +91,7 @@ void test_verification_fails_closed(void) {
     key[0] ^= 0x01;
 
     TEST_ASSERT_FALSE(HceReader::verifyProof("PLS-SOMEONE-ELSE", nonce, mac, key));  // wrong id
-    TEST_ASSERT_FALSE(HceReader::verifyProof(cred, "ffeeddccbbaa9988", mac, key));   // wrong nonce
+    TEST_ASSERT_FALSE(HceReader::verifyProof(cred, "ffeeddccbbaa99881122334455667788", mac, key));  // wrong nonce
 
     std::string flipped = mac;
     flipped[0] = (flipped[0] == 'a') ? 'b' : 'a';  // one hex digit of the MAC
@@ -154,22 +153,39 @@ void test_enrollment_key_wrap_is_exposed_and_round_trips(void) {
                                            TestVector::kKeyNonceHex, key);
     TEST_ASSERT_EQUAL_STRING(TestVector::kKeyWrappedHex, wrapped.c_str());
 
-    // Unwrap with the pad the server derives from the same reader secret.
-    const std::string label = std::string("pulse-hce-key-wrap/v1\n") + TestVector::kCredId +
-                              "\n" + TestVector::kKeyNonceHex;
-    uint8_t pad[32];
-    hmacSha256(reinterpret_cast<const uint8_t*>(TestVector::kReaderSecret),
-               strlen(TestVector::kReaderSecret),
-               reinterpret_cast<const uint8_t*>(label.data()), label.size(), pad);
-    uint8_t out[32];
-    TEST_ASSERT_EQUAL_size_t(32, HceReader::fromHex(wrapped, out, sizeof(out)));
+    // Unwrap with the shared helper (same pad the server derives).
     uint8_t recovered[32];
-    for (int i = 0; i < 32; i++) {
-        recovered[i] = (uint8_t)(out[i] ^ pad[i]);
-    }
+    TEST_ASSERT_EQUAL_size_t(32, HceReader::unwrapKeyHex(TestVector::kReaderSecret,
+                                                         TestVector::kCredId,
+                                                         TestVector::kKeyNonceHex,
+                                                         wrapped, recovered));
     TEST_ASSERT_EQUAL_UINT8_ARRAY(key, recovered, 32);
     memset(key, 0, sizeof(key));
-    memset(pad, 0, sizeof(pad));
+    memset(recovered, 0, sizeof(recovered));
+}
+
+void test_verify_accepts_twice_replay_is_server_side(void) {
+    // verifyProof() checks cryptographic validity ONLY: the same valid
+    // transcript verifies twice. Single-use/replay rejection belongs to
+    // the backend nonce table (see docs/SECURITY.md), not this function.
+    uint8_t key[32];
+    vectorKey(key);
+    TEST_ASSERT_TRUE(HceReader::verifyProof(TestVector::kCredId, TestVector::kNonceHex,
+                                            TestVector::kMacHex, key));
+    TEST_ASSERT_TRUE(HceReader::verifyProof(TestVector::kCredId, TestVector::kNonceHex,
+                                            TestVector::kMacHex, key));
+    memset(key, 0, sizeof(key));
+}
+
+void test_protocol_versions_and_kind_surface(void) {
+    TEST_ASSERT_EQUAL_UINT32(2, HceReader::protocolVersion());
+    TEST_ASSERT_EQUAL_UINT32(2, HceReader::keyWrapVersion());
+    TEST_ASSERT_EQUAL_STRING("hce", HceReader::kindName(CredentialKind::Hce));
+    TEST_ASSERT_EQUAL_STRING("physical", HceReader::kindName(CredentialKind::Physical));
+    // Tap defaults to the compatibility path.
+    HceReader::Tap tap;
+    TEST_ASSERT_FALSE(tap.isHce);
+    TEST_ASSERT_TRUE(tap.kind == CredentialKind::Physical);
 }
 
 void runPublicApiTests() {
@@ -177,6 +193,8 @@ void runPublicApiTests() {
     RUN_TEST(test_shared_vector_verifies_through_the_public_api);
     RUN_TEST(test_shared_vector_constants_stay_self_consistent);
     RUN_TEST(test_verification_fails_closed);
+    RUN_TEST(test_verify_accepts_twice_replay_is_server_side);
+    RUN_TEST(test_protocol_versions_and_kind_surface);
     RUN_TEST(test_hex_decode_rejects_garbage);
     RUN_TEST(test_status_words_are_decodable);
     RUN_TEST(test_key_missing_status_round_trips);

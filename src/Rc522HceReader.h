@@ -98,10 +98,15 @@ struct Rc522HceOptions {
 
 /**
  * 32-bit random-word source. The driver needs fresh nonces per tap
- * (CHALLENGE) and per enrollment (key-wrap): inject whatever trustworthy
- * noise the board has — esp_random on ESP32, radio RSSI, a floating
- * analog pin folded in by the app, a dedicated TRNG chip. Signature is a
- * plain function pointer so it works on every Arduino core (no std::function).
+ * (CHALLENGE) and per enrollment (key-wrap): inject an APPROVED noise
+ * source — esp_random on ESP32, a TRNG/secure element, or whitened radio
+ * noise the deployment has reviewed. Signature is a plain function
+ * pointer so it works on every Arduino core (no std::function).
+ *
+ * PRODUCTION REQUIREMENT: the portable fallback below (auto-seeded
+ * Arduino PRNG) is for hobby builds only. Production firmware on chips
+ * without a hardware RNG MUST inject an approved source; a predictable
+ * nonce breaks the replay/freshness argument (see docs/SECURITY.md).
  */
 using RandomWordFn = uint32_t (*)();
 
@@ -110,8 +115,9 @@ inline uint32_t defaultRandomWord() { return esp_random(); }
 #else
 inline uint32_t defaultRandomWord() {
     // Portable best-effort fallback: Arduino PRNG, auto-seeded once from
-    // timing jitter + floating-pin noise. Fine for nonces on hobby builds;
-    // production firmware on RNG-less chips should inject a stronger source.
+    // timing jitter + floating-pin noise. Hobby/dev nonces only — NOT an
+    // approved production CSPRNG. Production on RNG-less chips must pass
+    // an explicit RandomWordFn (see RandomWordFn).
     static bool seeded = false;
     if (!seeded) {
         seeded = true;
@@ -311,7 +317,7 @@ public:
             idOut += hex[mfrc522_.tag.uid.uidByte[i] >> 4];
             idOut += hex[mfrc522_.tag.uid.uidByte[i] & 0x0F];
         }
-        lastKind_ = "physical";
+        lastKind_ = CredentialKind::Physical;
         lastProof_.clear();
 
         // Release the card and stop any crypto session so the next tap works.
@@ -322,7 +328,9 @@ public:
 
     const char* label() const override { return "RC522 (SPI) + HCE"; }
 
-    const char* lastKind() const override { return lastKind_; }
+    CredentialKind kind() const override { return lastKind_; }
+
+    const char* lastKind() const override { return credentialKindName(lastKind_); }
 
     const HceProof& lastProof() const override { return lastProof_; }
 
@@ -331,7 +339,7 @@ public:
         wrapSecret_ = on ? wrapSecret : std::string();
     }
 
-    /** True when the last VersionReg probe answered. */
+    /** True when the last VersionReg probe answered (radio alive — not link/auth health). */
     bool healthy() const override { return healthy_; }
 
     /** Last PCD firmware-version byte seen (0 when never probed). */
@@ -361,7 +369,7 @@ private:
         // From here the driver TRANSMITS ONLY — we own every byte received.
         setPcdTimeoutMs(kHceTxOnlyTimeoutMs);
 
-        uint8_t cmd[16], resp[64];
+        uint8_t cmd[32], resp[64];  // cmd fits SELECT (5+11) and CHALLENGE (5+16)
         uint8_t respLen = sizeof(resp);
         const uint8_t cmdLen = static_cast<uint8_t>(buildSelectAidWith(aid_, aidLen_, cmd, sizeof(cmd)));
         // BEWARE the mutual-timeout race (bench-proven): our RX window is
@@ -458,7 +466,7 @@ private:
         // Identified (proof relayed, verified server-side): the credential
         // id — never the RF UID — is the tap.
         idOut = answer.credId;
-        lastKind_ = "hce";
+        lastKind_ = CredentialKind::Hce;
         if (log_) {
             log_->print("[NFC] HCE credential read (proof relayed to server): ");
             log_->println(idOut.c_str());
@@ -899,7 +907,7 @@ private:
     uint8_t ssPin_;
     Print* log_;                 // nullable diagnostics sink
     Rc522HceOptions options_;
-    const char* lastKind_ = "physical";    HceProof lastProof_;         // relayed transcript (+ wrapped key in enrollment)
+    CredentialKind lastKind_ = CredentialKind::Physical;    HceProof lastProof_;         // relayed transcript (+ wrapped key in enrollment)
     bool enrollment_ = false;    // enrollment mode → ENROLL after CHALLENGE
     bool redactFrames_ = false;  // true while an ENROLL (key-bearing) exchange runs
     std::string wrapSecret_;     // this reader's secret, only while enrolling

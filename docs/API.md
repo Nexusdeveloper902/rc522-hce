@@ -1,6 +1,6 @@
 # RC522-HCE API Reference
 
-Complete reference for the RC522-HCE library (v1.2.0): Android-HCE
+Complete reference for the RC522-HCE library (v2.0.0): Android-HCE
 phone-as-credential identification over ISO-DEP, plus the untouched
 MIFARE Classic UID path, as a reusable Arduino / PlatformIO library.
 
@@ -8,10 +8,12 @@ MIFARE Classic UID path, as a reusable Arduino / PlatformIO library.
 > — `reader.begin()` once, then `reader.read(tap, millis())` per loop.
 > Everything else in this document is a layer below that.
 >
-> Companion documents:
-> [`HCE_PROTOCOL.md`](HCE_PROTOCOL.md) (byte-level wire spec),
-> [`WIRING.md`](WIRING.md) (pins, power, tap distance),
-> [`../README.md`](../README.md) (install + 30-second example).
+> Task map (each authoritative doc linked, not duplicated):
+> quick start → [`../README.md`](../README.md);
+> wire bytes → [`HCE_PROTOCOL.md`](HCE_PROTOCOL.md);
+> pins/power/placement → [`WIRING.md`](WIRING.md);
+> threat model, replay, enrollment, RNG, relay limits → [`SECURITY.md`](SECURITY.md).
+> This file is the symbol/signature/behavioral-contract reference.
 
 - [Architecture](#architecture)
 - [1. `HceReader` (`src/HceReader.h`) — the facade](#1-hcereader--srchcereaderh--the-facade)
@@ -84,8 +86,8 @@ compile on the host (`pio test -e native`); `Rc522HceReader.h` and
 
 | Path | Source of identity | `lastKind()` / `tap.isHce` | `proof` |
 |---|---|---|---|
-| `physical` | MIFARE Classic UID off the RF layer, uppercase hex | `"physical"` / `false` | cleared (empty) |
-| `hce` | Application exchange `SELECT AID → CHALLENGE → len+credId+MAC+9000`; RF UID ignored (Android randomizes it per tap) | `"hce"` / `true` | `nonceHex` + `macHex` relayed; `keyWrappedHex` + `keyNonceHex` only on enrollment taps |
+| `physical` | MIFARE Classic UID off the RF layer, uppercase hex (compatibility id, clonable) | `CredentialKind::Physical` / `"physical"` / `false` | cleared (empty) |
+| `hce` | Application exchange `SELECT AID → CHALLENGE → len+credId+MAC+9000`; RF UID ignored (Android randomizes it per tap) | `CredentialKind::Hce` / `"hce"` / `true` | `nonceHex` + `macHex` relayed (UNVERIFIED — server must verify + enforce single-use before authorizing); `keyWrappedHex` + `keyNonceHex` only on enrollment taps |
 
 ---
 
@@ -106,8 +108,9 @@ One identified tap. `proof` carries the server-bound relay data.
 
 ```cpp
 struct Tap {
-    std::string credentialId;  // MIFARE hex UID, or the HCE application id
-    bool isHce = false;        // true => identity came from the APDU exchange
+    std::string credentialId;  // CLAIMED id: MIFARE hex UID, or the HCE application id
+    CredentialKind kind = CredentialKind::Physical;  // typed capture path (prefer over isHce)
+    bool isHce = false;        // convenience mirror of (kind == CredentialKind::Hce)
     HceProof proof;            // relay transcript (meaningful only when isHce)
 };
 ```
@@ -115,8 +118,9 @@ struct Tap {
 | Field | Set when | Contents |
 |---|---|---|
 | `credentialId` | every accepted tap | `physical`: uppercase hex UID (e.g. `"04A3B2C1"`); `hce`: ASCII app id (e.g. `"PLS-K3Y7V3CT0R5Z"`, 1–32 bytes) |
-| `isHce` | every accepted tap | `true` iff `transport.lastKind() == "hce"` |
-| `proof` | `isHce` taps | `nonceHex` (16 hex) + `macHex` (64 hex); enrollment taps additionally `keyWrappedHex` (64 hex) + `keyNonceHex` (32 hex). Cleared for physical taps. |
+| `kind` | every accepted tap | `transport.kind()` (legacy string-only transports fall back to `lastKind() == "hce"`) |
+| `isHce` | every accepted tap | convenience mirror of `(kind == CredentialKind::Hce)`; kept for compatibility |
+| `proof` | `isHce` taps | `nonceHex` (32 hex) + `macHex` (64 hex); enrollment taps additionally `keyWrappedHex` (120 hex) + `keyNonceHex` (24 hex). Cleared for physical taps. |
 
 ### 1.2 Construction
 
@@ -164,7 +168,11 @@ card, or cooldown).
   Wrap-safe (`nowMs - lastAccepted` unsigned arithmetic, ~49.7-day wrap).
 - **Call unconditionally every loop iteration.** The `false` path is
   what notices the card left (`debouncer_.markAbsent()`), which is what
-  arms the next deliberate re-tap.
+  arms the next deliberate re-tap. On `false`, `out` is left untouched.
+- An accepted tap is IDENTIFIED, not authenticated: `credentialId` is the
+  phone/card claim and `proof` is the UNVERIFIED relay. The server must
+  `verifyProof()` + claim the nonce atomically before the app authorizes
+  (see `SECURITY.md`). Physical UIDs are clonable compatibility ids.
 - On `true` with `isHce == false`, `proof` is cleared — never trust a
   stale proof from a previous HCE tap.
 
@@ -204,7 +212,9 @@ Enrollment mode on/off. Forwards to the transport and resets debounce.
   `proof.keyNonceHex`. The raw key never leaves the driver unwrapped.
 - `on == false` (default): normal taps never ask a phone for its key.
 - `wrapSecret` is held only while enrolling; passing `on == false`
-  clears it. **Never log it.**
+  clears it. **Never log it.** It MUST be high-entropy (≥ 16 random
+  bytes), unique per device — human passwords do not qualify (offline
+  guessing; see `SECURITY.md`).
 
 ```cpp
 reader.setEnrollment(true, readerSecret);
@@ -222,8 +232,10 @@ const char* label() const;  // e.g. "RC522 (SPI) + HCE", "MOCK (host input)"
 ```
 
 `healthy() == false` means the radio stopped answering (failed init or
-runtime death); the radio driver is already retrying on its reinit
-cadence — use this to show a degraded state, not to reboot:
+runtime death — VersionReg probe); the radio driver is already retrying
+on its reinit cadence — use this to show a radio-degraded state, not to
+reboot. It says nothing about NFC link quality or whether a phone can
+authenticate — never present it as system-operational:
 
 ```cpp
 if (!reader.healthy()) {
@@ -271,14 +283,17 @@ driver is optional, the protocol is the contract.
 |---|---|---|
 | `HceReader::aid()` | `const uint8_t*` — AID the phone's HCE app must serve | `F0 01 02 03 04 05 06` |
 | `HceReader::aidLen()` | `size_t` | `7` |
-| `HceReader::nonceLen()` | challenge nonce bytes | `8` |
+| `HceReader::nonceLen()` | challenge nonce bytes | `16` |
 | `HceReader::macLen()` | HMAC-SHA256 bytes | `32` |
 | `HceReader::minCredentialLen()` | min credential-id bytes | `1` |
 | `HceReader::maxCredentialLen()` | max credential-id bytes | `32` |
 | `HceReader::keyLen()` | per-credential key bytes | `32` |
 | `HceReader::statusWordName(sw1, sw2)` | `const char*` operator text, or `nullptr` when unrecognized (§2.7) | — |
-| `HceReader::verifyProof(proof, credId, credKey)` | backend check of a relayed proof, constant-time (§2.6) | `bool` |
+| `HceReader::verifyProof(proof, credId, credKey)` | backend check of CRYPTOGRAPHIC VALIDITY, constant-time (§2.6; freshness/authorization separate) | `bool` |
 | `HceReader::verifyProof(credId, nonceHex, macHex, credKey)` | lower-level form, straight from the wire | `bool` |
+| `HceReader::unwrapKeyHex(secret, credId, keyNonceHex, wrapped, out)` | v2 AEAD server-side unwrap mirror (tag failure → `0`) | `KEY_LEN` or `0` |
+| `HceReader::protocolVersion()` / `keyWrapVersion()` | wire + wrap versions | `1` / `1` |
+| `HceReader::kindName(kind)` | `"physical"`/`"hce"` log name | — |
 | `HceReader::toHex(data, len)` | lowercase hex `std::string` | — |
 | `HceReader::fromHex(hex, out, cap)` | bytes written; `0` on bad hex / short buffer (§2.5) | — |
 | `HceReader::selfCheckVector()` | `true` when the shared interop vector verifies (§2.8) | `bool` |
@@ -287,7 +302,8 @@ driver is optional, the protocol is the contract.
 ```cpp
 // Backend, holding the 32-byte key for tap.credentialId:
 if (!rc522hce::HceReader::verifyProof(tap.proof, tap.credentialId, credKey)) {
-    // reject — wrong key, tampered MAC, replayed or impossible transcript
+    // reject — wrong key, tampered MAC, or impossible transcript.
+    // (Freshness/single-use is a separate ATOMIC backend step — see SECURITY.md.)
 }
 
 // Prove a new phone app / backend matches before touching hardware:
@@ -321,11 +337,14 @@ static const uint8_t CLA_AUTH = 0x80;   // auth commands
 static const uint8_t INS_CHALLENGE = 0x10;
 static const uint8_t INS_ENROLL = 0x20; // one-time key hand-off (pairing only)
 
-static const size_t NONCE_LEN = 8;      // reader challenge length
+static const uint32_t PROTOCOL_VERSION = 2;  // wire format v2 (bump on any incompatible change)
+static const uint32_t KEY_WRAP_VERSION = 2;  // v2 ChaCha20-Poly1305 wrap (see SECURITY.md)
+static const size_t NONCE_LEN = 16;     // v2 reader challenge length (128-bit)
 static const size_t HMAC_LEN = 32;      // HMAC-SHA256 length
 static const size_t MAX_CRED_LEN = 32;  // longest credential id accepted
 static const size_t KEY_LEN = 32;       // per-credential HMAC key
-static const size_t KEY_NONCE_LEN = 16; // key-wrap nonce (32 hex chars)
+static const size_t KEY_NONCE_LEN = 12; // key-wrap nonce, AEAD-standard 96-bit (24 hex chars)
+static const size_t WRAP_SECRET_MIN_BYTES = 16;  // min reader-secret entropy (random bytes, not password chars)
 
 static const size_t MAX_AID_LEN = 11;   // SELECT frame fits 16-B cmd buffer
 static const size_t MIN_ISO_DEP_FRAME = 5;
@@ -384,16 +403,17 @@ size_t n = rc522hce::buildSelectAid(cmd, sizeof(cmd));  // 12
 size_t buildChallenge(const uint8_t nonce[NONCE_LEN], uint8_t* out, size_t cap);
 ```
 
-Builds `80 10 00 00 Lc nonce` (no Le). Returns `13` (`5 + NONCE_LEN`),
-`0` on null args or `cap < 13`.
+Builds `80 10 00 00 Lc nonce` (no Le). Returns `21` (`5 + NONCE_LEN`),
+`0` on null args or `cap < 21`.
 
 ```text
-80 10 00 00 08  NN NN NN NN NN NN NN NN
+80 10 00 00 10  NN × 16
 ```
 
 Nonce **must be fresh per tap** — generate with `fillRandomBytes()`
-(§2.4) from a hardware TRNG where one exists. It travels in the clear;
-logging it is safe.
+(§2.4) from an approved CSPRNG (`esp_random` on ESP32; production on
+RNG-less chips must inject one — see `SECURITY.md`). It travels in the
+clear; logging it is safe.
 
 #### `buildEnroll()`
 
@@ -406,10 +426,10 @@ short. **Send only in pairing mode, after CHALLENGE, in the same
 session.**
 
 ```cpp
-uint8_t cmd[16];
+uint8_t cmd[32];
 buildSelectAid(cmd, sizeof(cmd));       // → 12 B
-uint8_t nonce[8]; fillRandomBytes(nonce, 8, myRandomWord);
-buildChallenge(nonce, cmd, sizeof(cmd)); // → 13 B
+uint8_t nonce[16]; fillRandomBytes(nonce, 16, myRandomWord);
+buildChallenge(nonce, cmd, sizeof(cmd)); // → 21 B
 buildEnroll(cmd, sizeof(cmd));           // → 5 B (enrollment only)
 ```
 
@@ -541,10 +561,11 @@ Fills `len` bytes from a 32-bit random-word source, **little-endian per
 word** (first byte out = bits `[7:0]` of the first word). No-op on null
 `out` or null source. Never throws.
 
-The caller owns freshness: pass a hardware TRNG where one exists
-(`esp_random` on ESP32 — the radio driver does this automatically);
-the deterministic-stub pattern makes the byte layout unit-testable on
-the host.
+The caller owns freshness: pass an approved CSPRNG (`esp_random` on
+ESP32 — the radio driver does this automatically; production on RNG-less
+chips must inject one — see `SECURITY.md` "Randomness policy"). The
+deterministic-stub pattern exists ONLY to make the byte layout
+unit-testable on the host; it is not a production nonce source.
 
 ```cpp
 uint8_t nonce[8];
@@ -562,25 +583,43 @@ std::string wrapKeyHex(const std::string& readerSecret,
                        const uint8_t key[KEY_LEN]);
 ```
 
-Wraps a phone key for the pairing request (64 hex chars):
+Seals a phone key for the pairing request (120 hex chars) with the
+vetted ChaCha20-Poly1305 AEAD (RFC 8439):
 
 ```text
-key XOR HMAC-SHA256(readerSecret,
-    "pulse-hce-key-wrap/v1\n" || credId || "\n" || keyNonceHex)
+ke          = HMAC-SHA256(readerSecret, "pulse-hce-key-wrap/v2-enc\n" || credId)
+aad         = "pulse-hce-key-wrap/v2\n" || credId || "\n" || keyNonceHex
+(ct, tag)   = ChaCha20-Poly1305(ke, keyNonce, aad, key)
+out         = keyNonceHex || hex(ct) || hex(tag)   (24 + 64 + 32)
 ```
 
-- `keyNonceHex` must be fresh per pairing (lowercase hex, 32 chars =
-  16 B from `fillRandomBytes`).
-- Returns empty string on `key == nullptr`.
-- The pad is wiped before return; the caller must wipe the raw key.
+- `keyNonceHex` must be fresh per pairing (hex, 24 chars = 12 B from
+  `fillRandomBytes`).
+- Returns empty string on `key == nullptr`, malformed `keyNonceHex`,
+  or short entropy.
+- Key material and pads are wiped before return; the caller must wipe
+  the raw key.
+- `readerSecret` MUST be high-entropy (≥ `WRAP_SECRET_MIN_BYTES` random
+  bytes), unique per device. AEAD removes v1's malleability and binds
+  the wrap to (credId, nonce) — but a guessable secret stays
+  offline-guessable in principle (see `SECURITY.md`).
 
-Unwrap server-side by deriving the same pad and XOR-ing (§11.3).
+Unwrap server-side with `unwrapKeyHex()` (tag failure → `0`, fail closed —
+§11.3), then require proof-of-possession before storing.
+
+The primitives are exposed too (`chacha20Block`,
+`chacha20Poly1305Encrypt`/`Decrypt`, `AEAD_KEY/NONCE/TAG_LEN`) so
+backends share one implementation; all are pinned against RFC 8439
+vectors host-side (`pio test -e native`).
 
 ### 2.5 Hex helpers
 
 ```cpp
 std::string toHex(const uint8_t* data, size_t len);  // lowercase; empty on nullptr
 size_t unhex(const std::string& hex, uint8_t* out, size_t cap);
+size_t unwrapKeyHex(const std::string& readerSecret, const std::string& credId,
+                    const std::string& keyNonceHex, const std::string& wrappedHex,
+                    uint8_t keyOut[KEY_LEN]);  // KEY_LEN or 0; caller still owes proof-of-possession
 ```
 
 `unhex` decodes lowercase/uppercase hex → bytes. Returns bytes written;
@@ -589,14 +628,14 @@ size_t unhex(const std::string& hex, uint8_t* out, size_t cap);
 same function.
 
 ```cpp
-auto hex = rc522hce::toHex(nonce, 8);          // "0123456789abcdef"
-uint8_t raw[8];
-size_t n = rc522hce::unhex(hex, raw, sizeof(raw));  // 8; 0 on garbage
+auto hex = rc522hce::toHex(nonce, 16);          // 32 chars
+uint8_t raw[16];
+size_t n = rc522hce::unhex(hex, raw, sizeof(raw));  // 16; 0 on garbage
 ```
 
 Wire rule: relay transcripts and wrapped keys travel hex-encoded
-(`nonceHex` 16 chars, `macHex` / `keyWrappedHex` 64 chars,
-`keyNonceHex` 32 chars).
+(`nonceHex` 32 chars, `macHex` 64 chars, `keyWrappedHex` 120 chars =
+24 + 64 + 32, `keyNonceHex` 24 chars).
 
 ### 2.6 Backend verification (`verifyProof`)
 
@@ -613,6 +652,14 @@ compares against `macHex` in **constant time** (no timing leak).
 This is where the per-credential key is used — **never on the reader**.
 Reject when it returns `false`.
 
+Three separate decisions (see `SECURITY.md`): this function establishes
+**cryptographic validity only** (right key, untampered MAC, well-formed
+transcript). The backend separately establishes **freshness/single-use**
+(per-credential nonce table, claimed atomically — check-then-insert
+races under concurrency; use a unique constraint). The application then
+**authorizes** the operation. `true` is not proximity proof (relays are
+out of scope) and not an authorization decision.
+
 Fails closed on: `key == nullptr`; `macHex.size() != 64`; empty
 `nonceHex`; nonce not decoding to exactly `NONCE_LEN (8)` B; MAC not
 decoding to exactly `HMAC_LEN (32)` B; `credId` empty or `> 32` B (a
@@ -623,9 +670,10 @@ with `volatile`-accumulated XOR, not `memcmp`).
 // Server, holding the stored 32-byte key for tap.credentialId:
 if (!rc522hce::verifyProof(tap.credentialId, tap.proof.nonceHex,
                            tap.proof.macHex, credKey)) {
-    // reject — wrong key, tampered MAC, replayed or impossible transcript
+    // reject — wrong key, tampered MAC, or impossible transcript.
 }
-// + enforce per-credential nonce single-use (replay table) server-side.
+// + claim (credentialId, nonceHex) ATOMICALLY (unique constraint) — replay => reject.
+// verifyProof() alone verifies twice: it never rejects replays by itself.
 ```
 
 The `HceProof`-taking overload (`HceReader::verifyProof(proof, credId,
@@ -663,22 +711,25 @@ namespace TestVector {
 static const char* kCredId       = "PLS-K3Y7V3CT0R5Z";
 static const char* kKeyHex       = "000102030405060708090a0b0c0d0e0f"
                                    "101112131415161718191a1b1c1d1e1f";
-static const char* kNonceHex     = "0123456789abcdef";
-static const char* kMacHex       = "ba6d0fbf5106f79257727819d19a17b7e"
-                                   "15abc4b8a0d1bfe71cd76090488a295";
+static const char* kNonceHex     = "000102030405060708090a0b0c0d0e0f";
+static const char* kMacHex       = "70f32d7b458139d8f5f522a7314c3120"
+                                   "5eca50619a5d26dc466d7d5b60aab154";
 static const char* kReaderSecret = "test-secret-000000000000000001";
-static const char* kKeyNonceHex  = "000102030405060708090a0b0c0d0e0f";
-static const char* kKeyWrappedHex= "c5bb9fe15dff66a8636366dd4e73e0a3"
-                                   "146601e3b3c36472961de142a9a914c2";
+static const char* kKeyNonceHex  = "000102030405060708090a0b";
+static const char* kKeyWrappedHex= "000102030405060708090a0bd525e3992"
+                                   "5f68721c72478ce0d25a8078efb99ee6974f"
+                                   "2cd8dad8c872882faa4dfcb78880fbc7ee16"
+                                   "5be05086565530e";
 }
 ```
 
-Computed outside every implementation (Python `hmac`) and pinned in
-every port (phone app, reader, backend). `MAC = HMAC-SHA256(K_cred,
-credId || nonce)` with the bytes above; CHALLENGE response bytes:
+Computed outside every implementation (Python `hmac` + an independent
+ChaCha20-Poly1305) and pinned in every port (phone app, reader, backend).
+`MAC = HMAC-SHA256(K_cred, credId || nonce)` with the bytes above;
+CHALLENGE response bytes:
 
 ```text
-10  504C532D4B335937563343543052355A  ba6d…a295  9000
+10  504C532D4B335937563343543052355A  70f3…b154  9000
 ```
 
 `HceReader::selfCheckVector()` unhexes `kKeyHex` and runs
@@ -737,10 +788,10 @@ key. Empty for physical cards.
 
 ```cpp
 struct HceProof {
-    std::string nonceHex;       // 16 hex — reader's CHALLENGE nonce
+    std::string nonceHex;       // 32 hex — reader's CHALLENGE nonce
     std::string macHex;         // 64 hex — phone's HMAC, unverified here
-    std::string keyWrappedHex;  // 64 hex — enrollment only
-    std::string keyNonceHex;    // 32 hex — enrollment only (fresh per pairing)
+    std::string keyWrappedHex;  // 120 hex — enrollment only (24 + 64 + 32)
+    std::string keyNonceHex;    // 24 hex — enrollment only (fresh per pairing)
 
     bool present() const { return !nonceHex.empty() && !macHex.empty(); }
     bool hasKey() const { return !keyWrappedHex.empty() && !keyNonceHex.empty(); }
@@ -750,10 +801,10 @@ struct HceProof {
 
 | Field | Length | Safe to log? |
 |---|---|---|
-| `nonceHex` | 16 hex (8 B) | yes |
+| `nonceHex` | 32 hex (16 B) | yes |
 | `macHex` | 64 hex (32 B) | yes |
-| `keyWrappedHex` | 64 hex (32 B XOR pad) | yes (wrapped — useless without `readerSecret`) |
-| `keyNonceHex` | 32 hex (16 B) | yes |
+| `keyWrappedHex` | 120 hex (12 B nonce + 32 B ct + 16 B tag) | yes (sealed — useless without `readerSecret`) |
+| `keyNonceHex` | 24 hex (12 B) | yes |
 
 Key material is **never** in this struct raw — only wrapped.
 
@@ -764,13 +815,16 @@ both implement this, so application logic never knows which is behind
 it.
 
 ```cpp
+enum class CredentialKind : uint8_t { Physical = 0, Hce = 1 };
+
 class NfcReader {
 public:
     virtual ~NfcReader() = default;
     virtual bool begin() = 0;
     virtual bool poll(std::string& idOut) = 0;
-    virtual const char* lastKind() const { return "physical"; }
-    virtual const HceProof& lastProof() const;   // empty default
+    virtual CredentialKind kind() const { return CredentialKind::Physical; }
+    virtual const char* lastKind() const;   // deprecated shim over kind()
+    virtual const HceProof& lastProof() const;   // borrowed; see lifetime below
     virtual void setEnrollment(bool on, const std::string& wrapSecret) {}
     virtual const char* label() const = 0;
     virtual bool healthy() const { return true; }
@@ -783,9 +837,10 @@ public:
 | Method | Contract |
 |---|---|
 | `begin()` | Init hardware. `false` = not talking (wiring/power). |
-| `poll(idOut)` | Non-blocking. `true` + `idOut` filled = one credential this call. `false` = none. |
-| `lastKind()` | `"physical"` or `"hce"` — how the **last successful** poll's id was captured. |
-| `lastProof()` | Relayed HCE transcript of the last successful poll; empty default for physical cards / base class. |
+| `poll(idOut)` | Non-blocking, never throws. `true` + `idOut` filled = one credential this call. `false` = none (`idOut` untouched; `kind()`/`lastProof()` stale — last success). |
+| `kind()` | `CredentialKind::Physical` / `::Hce` — how the **last successful** poll's id was captured. Prefer over `lastKind()`. |
+| `lastKind()` | Deprecated shim (`"physical"`/`"hce"`) over `kind()`; kept for pre-2.0 custom transports. New code overrides `kind()`. |
+| `lastProof()` | Borrowed relayed HCE transcript of the last successful poll; empty default for physical cards / base class. Valid until the next `poll()`/`setEnrollment()`/`setAid()`/destruction — copy when it must outlive that. Stale after `poll() == false` (still the last success); only use immediately after `poll() == true`. |
 | `setEnrollment(on, wrapSecret)` | Pairing mode. Default no-op (mock); radio fetches+wraps the key while on. |
 | `label()` | Short log label (`"RC522 (SPI) + HCE"`, `"MOCK (host input)"`, …). |
 | `healthy()` | `true` unless a radio driver revoked it (VersionReg probe). Non-hardware readers always `true`. |
@@ -864,10 +919,13 @@ inline uint32_t defaultRandomWord();  // ESP32: esp_random()
 key-wrap nonces. Plain function pointer (every Arduino core, no
 `std::function`).
 
-- ESP32: `esp_random()` hardware RNG, automatic.
+- ESP32: `esp_random()` hardware RNG, automatic (approved).
 - Others: best-effort auto-seeded fallback (`micros() ^ millis()` +
-  `analogRead(A0)` once, then Arduino PRNG). Fine for hobby nonces.
-- **Production on RNG-less chips: inject your own.**
+  `analogRead(A0)` once, then Arduino PRNG). Hobby/dev only — NOT an
+  approved production CSPRNG.
+- **Production on RNG-less chips MUST inject an approved source**
+  (TRNG/secure element/reviewed noise — see `SECURITY.md`). A predictable
+  nonce breaks the freshness argument.
 
 ```cpp
 uint32_t myNoise() { /* floating analog pin / RSSI / TRNG chip */ return ...; }
@@ -886,11 +944,11 @@ Byte order out of `fillRandomBytes` is little-endian per word
 | `poll()` | `bool poll(std::string& idOut) override` | Full flow below. `true` = one credential. |
 | `setAid()` | `bool setAid(const uint8_t*, size_t) override` | `1..MAX_AID_LEN` accepted, else `false` + previous kept. |
 | `aid()` / `aidLen()` | `const uint8_t*` / `size_t` | Currently selected AID (constructor seeds protocol default). |
-| `lastKind()` | `const char*` | `"physical"` / `"hce"`. |
+| `kind()` / `lastKind()` | `CredentialKind` / `const char*` | typed kind + deprecated string shim over it. |
 | `lastProof()` | `const HceProof&` | Relayed transcript (+ wrapped key in enrollment). |
 | `setEnrollment()` | `void setEnrollment(bool, const std::string&) override` | Stores/clears `wrapSecret_`; off clears the secret. |
 | `setLog()` | `void setLog(Print* log)` | Diagnostics sink (`Serial`, `TsLog`, …) or `nullptr` for silence. |
-| `healthy()` | `bool healthy() const override` | Last VersionReg probe answered. |
+| `healthy()` | `bool healthy() const override` | Last VersionReg probe answered (radio alive — not link/auth health). |
 | `lastVersion()` | `uint8_t lastVersion() const` | Last PCD firmware byte (`0x91` v1.0, `0x92` v2.0; clones `0x90`/`0x88`; `0` never probed; `0x00`/`0xFF` dead). |
 | `label()` | `const char*` | `"RC522 (SPI) + HCE"`. |
 
@@ -1045,9 +1103,10 @@ public:
 
 - Empty lines ignored; newest push wins (taps are human-paced).
 - Each `poll()` consumes at most one tap; empty queue → `false`.
-- Reports `lastKind() == "physical"` and empty `lastProof()` (base
-  defaults) — for scripted HCE proofs use a fake transport overriding
-  those (see `test/test_facade.cpp`).
+- Reports `kind() == CredentialKind::Physical` (and `lastKind() ==
+  "physical"` shim) and empty `lastProof()` (base defaults) — for
+  scripted HCE proofs use a fake transport overriding those (see
+  `test/test_facade.cpp`).
 
 ```cpp
 rc522hce::MockNfcReader mock;
@@ -1104,9 +1163,9 @@ driver aliases guarded so the header still compiles in host tests.
 | `Presence::Hce::buildSelectAid[With]` / `buildChallenge` / `buildEnroll` | `rc522hce::…` |
 | `Presence::Hce::isOk` / `isKeyMissing` | `rc522hce::…` |
 | `Presence::Hce::parseSelectResponse` / `parseChallengeResponse` / `parseEnrollResponse` | `rc522hce::…` |
-| `Presence::Hce::hmacSha256` / `sha256Bytes` / `wrapKeyHex` | `rc522hce::…` |
-| `Presence::Hce::SelectOutcome` / `ChallengeResponse` | `rc522hce::…` |
-| `Presence::Hce::AID[AID_LEN, MAX_AID_LEN, NONCE_LEN, HMAC_LEN, MAX_CRED_LEN, KEY_LEN, KEY_NONCE_LEN]` | `rc522hce::…` |
+| `Presence::Hce::hmacSha256` / `sha256Bytes` / `wrapKeyHex` / `unwrapKeyHex` | `rc522hce::…` |
+| `Presence::Hce::SelectOutcome` / `ChallengeResponse` / `CredentialKind` | `rc522hce::…` |
+| `Presence::Hce::AID[AID_LEN, MAX_AID_LEN, NONCE_LEN, HMAC_LEN, MAX_CRED_LEN, KEY_LEN, KEY_NONCE_LEN, PROTOCOL_VERSION, KEY_WRAP_VERSION, AEAD_KEY/NONCE/TAG_LEN]` | `rc522hce::…` |
 | `Presence::Hce::TestVector` (namespace alias) | `rc522hce::TestVector` |
 | `Presence::Signer::toHex` / `sha256Hex` | `rc522hce::toHex` / `sha256Hex` |
 
@@ -1119,9 +1178,9 @@ driver aliases guarded so the header still compiles in host tests.
 | `build*` | bytes written (`12`/`13`/`5`) | `0` | bad args or short buffer; never partial |
 | `parse*` returning `bool` | `true` + `out` filled | `false` + `out` cleared (`ok=false`) | exact-length only |
 | `parseSelectResponse` | `Selected` / `UnknownAid` | `Malformed` | `nullptr`/`len<2` → `Malformed` |
-| `unhex` / `fromHex` | bytes written | `0` | odd len, bad chars, short cap — refuses, never truncates |
+| `unhex` / `fromHex` / `unwrapKeyHex` | bytes written (`KEY_LEN` for unwrap) | `0` | odd len, bad chars, short cap, tag failure — refuses, never truncates (wrong secret/tamper fail closed at unwrap; possession check still required) |
 | `setAid` | `true` | `false`, previous kept | `nullptr` / `0` / `> 11` |
-| `verifyProof` | `true` | `false` (fail closed) | wrong key/id/nonce/MAC, malformed hex, impossible id |
+| `verifyProof` | `true` (validity only — verifies twice by design) | `false` (fail closed) | wrong key/id/nonce/MAC, malformed hex, impossible id; replays NOT detected here |
 | `statusWordName` | operator text | `nullptr` | unrecognized SW |
 | `HceReader::begin` / `poll` / `read` | `true` | `false` | `read` false also = resting/cooldown (not an error) |
 | `selfCheckVector` | `true` | `false` | crypto mismatch — stop and investigate |
@@ -1139,7 +1198,7 @@ unwrap enrollment keys.
 
 ### 11.1 Verify an operation tap
 
-Input per tap: `credentialId`, `nonceHex` (16), `macHex` (64).
+Input per tap: `credentialId`, `nonceHex` (32), `macHex` (64).
 
 ```cpp
 // C++ backend (same implementation as the firmware — one crypto, not three):
@@ -1147,27 +1206,37 @@ uint8_t credKey[32];  // load by credentialId from your DB
 loadKey(tap.credentialId, credKey);
 bool ok = rc522hce::HceReader::verifyProof(tap.proof, tap.credentialId, credKey);
 memset(credKey, 0, sizeof(credKey));
-if (!ok) { reject(); }
-// + reject reused (credentialId, nonceHex) pairs — replay table, single-use nonces.
+if (!ok) { reject(); }  // cryptographic validity only
+// + claim (credentialId, nonceHex) ATOMICALLY (unique constraint below) —
+//   conflict => replay => reject. Then authorize. verifyProof() alone never
+//   rejects replays: the same valid transcript verifies twice by design.
 ```
 
 ```python
 # Python backend (equivalent):
 import hmac, hashlib
 cred_key = db.load_key(credential_id)          # 32 bytes
-nonce    = bytes.fromhex(nonce_hex)            # 8 bytes
+nonce    = bytes.fromhex(nonce_hex)            # 16 bytes
 mac      = bytes.fromhex(mac_hex)              # 32 bytes
 expected = hmac.new(cred_key, credential_id.encode() + nonce,
                     hashlib.sha256).digest()
 if not hmac.compare_digest(expected, mac):     # constant-time!
     reject()
-check_and_remember_nonce(credential_id, nonce_hex)  # replay => reject
+# Atomic single-use claim — check-then-insert races under concurrency.
+try:
+    db.execute("INSERT INTO seen_nonces(credential_id, nonce_hex) VALUES(%s,%s)",
+               (credential_id, nonce_hex))       # PRIMARY KEY (credential_id, nonce_hex)
+except UniqueViolation:
+    reject("replay")
+authorize(...)
 ```
 
 Rules: look the key up **by the claimed id** (the id is inside the
 MAC, so a key authenticates only its own id); compare in constant time
-(`compare_digest` / the library's volatile-XOR); enforce nonce
-single-use per credential; reject empty / >32-B ids without a DB hit.
+(`compare_digest` / the library's volatile-XOR); claim the nonce
+atomically per credential (unique constraint — never check-then-insert);
+reject empty / >32-B ids without a DB hit. Full rationale:
+[`SECURITY.md`](SECURITY.md) §§1–3.
 
 ### 11.2 What to store per credential
 
@@ -1175,13 +1244,13 @@ single-use per credential; reject empty / >32-B ids without a DB hit.
 |---|---|
 | `credential_id` | ASCII, 1–32 B, primary key |
 | `key` | 32 B secret (HSM/KMS; never in logs) |
-| `seen_nonces` | set of used `nonceHex` per id (replay memory) |
+| `seen_nonces` | set of used `nonceHex` per id (replay memory; `nonce_hex CHAR(32)`) |
 | `revoked` | lost/stolen phone → delete/flag the key (revocation = key destruction) |
 
 ### 11.3 Unwrap an enrollment tap
 
-Input: `credentialId`, `nonceHex`, `macHex`, `keyWrappedHex` (64),
-`keyNonceHex` (32), plus your `readerSecret` (the string passed to
+Input: `credentialId`, `nonceHex`, `macHex`, `keyWrappedHex` (120),
+`keyNonceHex` (24), plus your `readerSecret` (the string passed to
 `setEnrollment(true, readerSecret)` on that reader).
 
 **Order matters — proof of possession first:**
@@ -1196,20 +1265,28 @@ Input: `credentialId`, `nonceHex`, `macHex`, `keyWrappedHex` (64),
 
 ```python
 import hmac, hashlib
-label = f"pulse-hce-key-wrap/v1\n{credential_id}\n{key_nonce_hex}".encode()
-pad = hmac.new(reader_secret.encode(), label, hashlib.sha256).digest()
-wrapped = bytes.fromhex(key_wrapped_hex)
-candidate = bytes(a ^ b for a, b in zip(wrapped, pad))
-# proof-of-possession under the candidate:
+from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+ke = hmac.new(reader_secret.encode(),
+              f"pulse-hce-key-wrap/v2-enc\n{credential_id}".encode(),
+              hashlib.sha256).digest()
+aad = f"pulse-hce-key-wrap/v2\n{credential_id}\n{key_nonce_hex}".encode()
+raw = bytes.fromhex(key_wrapped_hex)
+key_nonce, ct, tag = raw[:12], raw[12:44], raw[44:]
+candidate = ChaCha20Poly1305(ke).decrypt(bytes(key_nonce), ct + tag, aad)  # raises on wrong secret/tamper
+# proof-of-possession under the candidate (mandatory — never store first):
 expected = hmac.new(candidate, credential_id.encode()
                     + bytes.fromhex(nonce_hex), hashlib.sha256).digest()
 assert hmac.compare_digest(expected, bytes.fromhex(mac_hex))
 db.store_key(credential_id, candidate)  # rotate on re-enrollment
 ```
 
-The C++ unwrap is the mirror image (`hmacSha256` over the same label,
-`unhex` the wrap, XOR — see `test/test_public_api.cpp`
-`test_enrollment_key_wrap_is_exposed_and_round_trips`).
+The C++ side is `HceReader::unwrapKeyHex(readerSecret, credId,
+keyNonceHex, wrappedHex, out)` (returns `KEY_LEN` or `0` on tag failure)
+— see `test/test_public_api.cpp`
+`test_enrollment_key_wrap_is_exposed_and_round_trips`. Either way, the
+order is unwrap → proof-of-possession under the candidate → store.
+`readerSecret` must be high-entropy and per-device (see `SECURITY.md`
+§5); a shared or guessable secret is a fleet-wide exposure.
 
 ---
 
@@ -1234,7 +1311,9 @@ server unwraps (§11.3), requires CHALLENGE proof under candidate, stores
 - Normal taps (mode off) never send `ENROLL` — a sniffed operation
   transcript contains no key.
 - `wrapSecret` empty + mode on → enrollment tap fails closed (`collectKey`
-  refuses; tap returns `false`, proof cleared).
+  refuses; tap returns `false`, proof cleared). A short/human secret is
+  not a softer failure — it enrolls but is offline-guessable (see
+  `SECURITY.md` §5): generate per-device CSPRNG output.
 - `6985` on ENROLL = window closed/expired/released/not SELECTed — the
   operator re-opens the phone window and taps again.
 - `6A88` on CHALLENGE = phone has no key — enroll it; do not retry the
@@ -1251,10 +1330,11 @@ Prove a new side matches **before** touching hardware:
 2. Recompute `MAC = HMAC-SHA256(bytes(kKeyHex), kCredId || bytes(kNonceHex))`
    independently (Python `hmac` one-liner) → must equal `kMacHex`.
 3. `wrapKeyHex(kReaderSecret, kCredId, kKeyNonceHex, key)` must equal
-   `kKeyWrappedHex`; unwrapping per §11.3 must recover `kKeyHex`.
+   `kKeyWrappedHex` (120 hex); `unwrapKeyHex` per §11.3 must recover
+   `kKeyHex`, and must return `0` for a wrong secret or flipped byte.
 4. Builders must emit the exact bytes (§2.2); parsers must accept the
    vector CHALLENGE response and reject the `Malformed` shapes
-   (`pio test -e native` pins all of these — 95 tests, no board).
+   (`pio test -e native` pins all of these — 106 tests, no board).
 5. Only then debug on hardware (`SAK=0x20 ATS=0B` = RF/placement, `6A82`
    = AID/routing, `6A88` = unenrolled, `6985` = window closed).
 
@@ -1271,16 +1351,17 @@ class MyReader : public rc522hce::NfcReader {
 public:
     bool begin() override { /* init */ return true; }
     bool poll(std::string& idOut) override {
-        // physical: idOut = uppercase hex UID, lastKind "physical", proof cleared
+        // physical: idOut = uppercase hex UID, kind Physical, proof cleared
         // hce: SELECT+CHALLENGE via §2.2/§2.3, idOut = credId,
-        //      lastKind "hce", lastProof = {nonceHex, macHex}
+        //      kind Hce, lastProof = {nonceHex, macHex}
+        // On false: leave idOut untouched; kind()/lastProof() stay stale.
         return false;
     }
-    const char* lastKind() const override { return lastKind_; }
-    const HceProof& lastProof() const override { return proof_; }
+    rc522hce::CredentialKind kind() const override { return kind_; }
+    const HceProof& lastProof() const override { return proof_; }  // borrowed; copy to retain
     const char* label() const override { return "MY-RADIO"; }
 private:
-    const char* lastKind_ = "physical";
+    rc522hce::CredentialKind kind_ = rc522hce::CredentialKind::Physical;
     rc522hce::HceProof proof_;
 };
 
@@ -1308,7 +1389,7 @@ every failure so MIFARE taps are unaffected.
 | `HCE phone has NO key yet (6A88)` | unenrolled phone | enroll (§12), don't retry operation |
 | `HCE CHALLENGE answer malformed` | framing fault | RF/driver side, not the phone app's logic |
 | `HCE ENROLL refused` | `6985` | open the phone enrollment window first, tap again |
-| `Reader degraded — retrying…` | runtime death (ESD/brown-out) | driver self-heals on cadence; check power/ESD |
+| `Radio degraded — retrying…` | runtime death (ESD/brown-out) | driver self-heals on cadence; check power/ESD (radio health only — not link/auth health) |
 | Corrupt reads on 5 V boards | level/power | level-shift MOSI/SCK/SS, 1 MHz SPI |
 | Cards ok, phones fail (or vice versa) | antenna detuning | metal away from antenna face |
 
@@ -1332,7 +1413,29 @@ every failure so MIFARE taps are unaffected.
 
 Examples: [`../examples/BasicTap/BasicTap.ino`](../examples/BasicTap/BasicTap.ino)
 (minimal tap printer), [`../examples/HceEnroll/HceEnroll.ino`](../examples/HceEnroll/HceEnroll.ino)
-(operation + one-shot enrollment). Tests (`../test/`, 95 host-side Unity
+(operation + one-shot enrollment). Tests (`../test/`, 101 host-side Unity
 tests, `pio test -e native`) pin every contract above — including a
 translation unit that includes **only** `HceReader.h`, so this document
 cannot promise something the API stops exposing.
+
+---
+
+## 17. API stability policy
+
+Three levels; stability decreases downward. `HceReader.h` is the only
+header most apps need — the rest is opt-in.
+
+| Level | Headers | Stability |
+|---|---|---|
+| 1 — Application API | `HceReader.h`: `begin()` / `read()` / `setEnrollment()` / `healthy()` / `setAid()` / `Tap` (`credentialId`, `kind`, `isHce`, `proof`) | Stable across minor versions. `isHce` stays as the convenience mirror of `kind`; `kind` is the preferred spelling. |
+| 2 — Protocol + transport | `HceProtocol.h` / `NfcReader.h`: builders/parsers, `verifyProof`, `wrapKeyHex`/`unwrapKeyHex`, `CredentialKind`, `HceProof`, transport interface | Stable wire semantics per `PROTOCOL_VERSION`; new versions ship versioned (new vector, migration notes), never silent changes. `lastKind()` string is deprecated, kept for pre-2.0 transports. |
+| 3 — Hardware + diagnostics | `Rc522HceReader.h`, `Rc522HceConfig.h`, `TsLog.h`, log text, timings, salvage/WTX internals | Semver-minor may tune (windows, retries, log wording). Pin behavior you rely on, not log strings. |
+
+`CompatNames.h` is migration-only (same types, no conversion); do not use
+in new code. Deprecated spellings (`lastKind()`, `isHce`-only logic) are
+kept through v2.x and removed only in a major with migration notes.
+
+Allocation policy: Level 1 strings are convenience (HTTP/JSON); Level 2
+hot paths use caller-owned buffers and refuse-to-truncate codes. Measure
+heap on the target before extending the buffer discipline inward (see
+`SECURITY.md` §8).

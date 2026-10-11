@@ -73,11 +73,24 @@ void test_mock_label_is_nonempty(void) {
 
 void test_mock_default_kind_is_physical_and_proof_empty(void) {
     MockNfcReader r;
+    TEST_ASSERT_TRUE(r.kind() == CredentialKind::Physical);
     TEST_ASSERT_EQUAL_STRING("physical", r.lastKind());
+    TEST_ASSERT_EQUAL_STRING("physical", credentialKindName(r.kind()));
     TEST_ASSERT_FALSE(r.lastProof().present());
     // setEnrollment is a safe no-op on the mock (only the radio driver uses it).
     r.setEnrollment(true, "secret");
     r.setEnrollment(false, "");
+}
+
+void test_transport_failure_leaves_stale_kind_and_proof(void) {
+    // Contract: after poll() == false, kind()/lastProof() are stale (last
+    // success) and must not be used. The mock has never succeeded, so it
+    // stays at the Physical/empty default.
+    MockNfcReader r;
+    std::string id;
+    TEST_ASSERT_FALSE(r.poll(id));
+    TEST_ASSERT_TRUE(r.kind() == CredentialKind::Physical);
+    TEST_ASSERT_FALSE(r.lastProof().present());
 }
 
 // --- HceProof semantics ---------------------------------------------------------------
@@ -120,11 +133,12 @@ void test_simulated_hce_tap_identifies_end_to_end(void) {
         phoneKey[i] = (uint8_t)(0x40 + i);
     }
     const std::string credId = "TEST-ANDROID-001";
-    const uint8_t nonce[NONCE_LEN] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88};
+    const uint8_t nonce[NONCE_LEN] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+                                      0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00};
 
     // Reader side: build the CHALLENGE APDU.
-    uint8_t chal[16];
-    TEST_ASSERT_EQUAL_size_t(13, buildChallenge(nonce, chal, sizeof(chal)));
+    uint8_t chal[32];
+    TEST_ASSERT_EQUAL_size_t(5 + NONCE_LEN, buildChallenge(nonce, chal, sizeof(chal)));
 
     // Phone side: answer with len + credId + MAC + 9000.
     uint8_t mac[HMAC_LEN];
@@ -157,7 +171,7 @@ void test_simulated_hce_tap_identifies_end_to_end(void) {
     proof.nonceHex = toHex(nonce, NONCE_LEN);
     proof.macHex = toHex(parsed.mac, HMAC_LEN);
     TEST_ASSERT_TRUE(proof.present());
-    TEST_ASSERT_EQUAL_STRING("1122334455667788", proof.nonceHex.c_str());
+    TEST_ASSERT_EQUAL_STRING("112233445566778899aabbccddeeff00", proof.nonceHex.c_str());
     TEST_ASSERT_FALSE(proof.hasKey());  // operation tap carries no key
 }
 
@@ -168,7 +182,7 @@ void test_simulated_tap_with_wrong_key_fails_verification(void) {
     memset(phoneKey, 0x41, 32);
     memset(otherKey, 0x42, 32);
     const std::string credId = "CRED-X";
-    const uint8_t nonce[NONCE_LEN] = {1, 2, 3, 4, 5, 6, 7, 8};
+    const uint8_t nonce[NONCE_LEN] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
 
     uint8_t msg[64];
     memcpy(msg, credId.data(), credId.size());
@@ -196,24 +210,15 @@ void test_simulated_enrollment_wraps_and_unwraps(void) {
     TEST_ASSERT_TRUE(parseEnrollResponse(enrollResp, sizeof(enrollResp), collected));
 
     const std::string wrapped =
-        wrapKeyHex("reader-secret", "CRED-E", "000102030405060708090a0b0c0d0e0f", collected);
-    TEST_ASSERT_EQUAL_UINT32(64, (uint32_t)wrapped.size());
+        wrapKeyHex("reader-secret", "CRED-E", "000102030405060708090a0b", collected);
+    TEST_ASSERT_EQUAL_UINT32(120, (uint32_t)wrapped.size());  // 24 + 64 + 32
 
-    // Server unwraps and checks it equals the enrolled key.
-    const std::string label =
-        std::string("pulse-hce-key-wrap/v1\n") + "CRED-E\n" + "000102030405060708090a0b0c0d0e0f";
-    uint8_t pad[32];
-    hmacSha256(reinterpret_cast<const uint8_t*>("reader-secret"), 13,
-               reinterpret_cast<const uint8_t*>(label.data()), label.size(), pad);
+    // Server unwraps with the shared helper and checks it equals the key.
     uint8_t unwrapped[32];
-    for (int i = 0; i < 32; i++) {
-        unsigned hi = wrapped[2 * i] >= 'a' ? (unsigned)(wrapped[2 * i] - 'a' + 10)
-                                            : (unsigned)(wrapped[2 * i] - '0');
-        unsigned lo = wrapped[2 * i + 1] >= 'a' ? (unsigned)(wrapped[2 * i + 1] - 'a' + 10)
-                                                : (unsigned)(wrapped[2 * i + 1] - '0');
-        unwrapped[i] = (uint8_t)((hi << 4) | lo) ^ pad[i];
-    }
+    TEST_ASSERT_EQUAL_size_t(32, unwrapKeyHex("reader-secret", "CRED-E",
+                                              "000102030405060708090a0b", wrapped, unwrapped));
     TEST_ASSERT_EQUAL_UINT8_ARRAY(phoneKey, unwrapped, 32);
+    memset(unwrapped, 0, sizeof(unwrapped));
 }
 
 void runReaderContractTests() {
@@ -225,6 +230,7 @@ void runReaderContractTests() {
     RUN_TEST(test_mock_accepts_hce_credential_ids_verbatim);
     RUN_TEST(test_mock_label_is_nonempty);
     RUN_TEST(test_mock_default_kind_is_physical_and_proof_empty);
+    RUN_TEST(test_transport_failure_leaves_stale_kind_and_proof);
     RUN_TEST(test_proof_empty_by_default);
     RUN_TEST(test_proof_present_needs_nonce_and_mac);
     RUN_TEST(test_proof_key_needs_wrapped_and_nonce);

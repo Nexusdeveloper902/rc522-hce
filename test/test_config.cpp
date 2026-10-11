@@ -138,8 +138,12 @@ void test_compat_names_protocol_surface_resolves(void) {
     TEST_ASSERT_EQUAL_STRING("6162", Presence::Signer::toHex((const uint8_t*)"ab", 2).c_str());
     TEST_ASSERT_EQUAL_INT((int)rc522hce::SelectOutcome::Selected,
                           (int)Presence::Hce::parseSelectResponse((const uint8_t*)"HCE-OK\x90\x00", 8));
-    TEST_ASSERT_EQUAL_STRING("ba6d0fbf5106f79257727819d19a17b7e15abc4b8a0d1bfe71cd76090488a295",
+    TEST_ASSERT_EQUAL_STRING("70f32d7b458139d8f5f522a7314c31205eca50619a5d26dc466d7d5b60aab154",
                              Presence::Hce::TestVector::kMacHex);
+    TEST_ASSERT_EQUAL_UINT32(2, Presence::Hce::PROTOCOL_VERSION);
+    TEST_ASSERT_TRUE(Presence::CredentialKind::Hce == rc522hce::CredentialKind::Hce);
+    TEST_ASSERT_EQUAL_STRING("hce", Presence::Hce::credentialKindName(
+                                        Presence::CredentialKind::Hce));
 }
 
 void runConfigTests() {

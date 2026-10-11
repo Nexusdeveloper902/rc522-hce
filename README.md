@@ -4,11 +4,11 @@
 
 **Turn an RC522 + Android phone into a credential reader: one `read()` call, no keys on the reader.**
 
-[![CI](https://github.com/NexusDeveloper902/rc522-hce/actions/workflows/CI/badge.svg)](https://github.com/NexusDeveloper902/rc522-hce/actions/workflows/CI)
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Build](https://img.shields.io/github/actions/workflow/status/NexusDeveloper902/rc522-hce/ci.yml?branch=main&logo=githubactions&logoColor=white)](https://github.com/NexusDeveloper902/rc522-hce/actions/workflows/CI)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg?logo=apache&logoColor=white)](LICENSE)
 ![C++](https://img.shields.io/badge/C++-Arduino-00599C?logo=cplusplus&logoColor=white)
-![PlatformIO](https://img.shields.io/badge/platformio-geek02%2FRC522--HCE-EA5A21?logo=platformio&logoColor=white)
-![Protocol](https://img.shields.io/badge/protocol-v2-green.svg)
+[![PlatformIO](https://img.shields.io/badge/platformio-geek02%2FRC522--HCE-EA5A21?logo=platformio&logoColor=white)](https://registry.platformio.org/libraries/geek02/RC522-HCE)
+![Protocol](https://img.shields.io/badge/protocol-v2-green.svg?logo=nfc&logoColor=white)
 
 [Quick start](#quick-start) · [Features](#features) · [How it works](#how-it-works) · [Boards](#boards) · [Docs](#docs)
 

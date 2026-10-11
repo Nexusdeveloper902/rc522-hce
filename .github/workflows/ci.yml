@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  host-tests:
+    name: Host tests (86+ pure-C++ tests, no board)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            .pio
+          key: ${{ runner.os }}-pio-native-${{ hashFiles('**/*.ini', '**/*.h', '**/*.cpp') }}
+      - uses: pablo-costan-idealo/action-platformio@v1
+        with:
+          command: test
+          environment: native
+
+  cross-compile:
+    name: Cross-compile (${{ matrix.board }} / ${{ matrix.example }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        board: [esp32dev, megaatmega2560]
+        example: [BasicTap, HceEnroll]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: ${{ runner.os }}-pio-${{ matrix.board }}
+      - name: Install dependencies (Mega also needs the STL shim)
+        run: |
+          pio pkg install --global --library "miguelbalboa/MFRC522@^1.4.11"
+          if [ "${{ matrix.board }}" = "megaatmega2560" ]; then
+            # 8-bit AVR toolchain ships no C++ stdlib, hence the shim
+            pio pkg install --global --library "mike-matera/ArduinoSTL@^1.3.3"
+          fi
+      - name: Build example against the library
+        run: pio ci --board ${{ matrix.board }} --lib . \
+          examples/${{ matrix.example }}/${{ matrix.example }}.ino
+
+  a32-build-flag-rewire:
+    name: Rewire via build flags only (ESP32-CAM pins + custom AID)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: ${{ runner.os }}-pio-esp32cam
+      - name: Proves pins/AID/timings are configurable without source edits
+        run: |
+          pio pkg install --global --library "miguelbalboa/MFRC522@^1.4.11"
+          mkdir -p /tmp/ci-flags/src
+          cat > /tmp/ci-flags/src/main.cpp <<'EOF'
+          #include <Arduino.h>
+          #include <HceReader.h>
+          #include <Rc522HceReader.h>
+          rc522hce::Rc522HceReader radio;   // pins come from build flags
+          rc522hce::HceReader reader(radio);
+          void setup() {
+            Serial.begin(115200);
+            reader.begin();
+            const uint8_t myAid[] = {0xD1, 0x76, 0x00, 0x00, 0x85};
+            reader.setAid(myAid, sizeof(myAid));   // AID changed at runtime
+          }
+          void loop() {
+            rc522hce::HceReader::Tap tap;
+            if (reader.read(tap, millis())) { Serial.println(tap.credentialId.c_str()); }
+          }
+          EOF
+          cat > /tmp/ci-flags/platformio.ini <<'EOF'
+          [env:esp32cam]
+          platform = espressif32
+          framework = arduino
+          board = esp32cam
+          monitor_dtr = 0
+          monitor_rts = 0
+          build_flags =
+              -DRC522HCE_SS_PIN=13
+              -DRC522HCE_RST_PIN=255
+              -DRC522HCE_SCK_PIN=14
+              -DRC522HCE_MISO_PIN=2
+              -DRC522HCE_MOSI_PIN=15
+              -DRC522HCE_DEBOUNCE_MS=1500
+          lib_deps =
+              miguelbalboa/MFRC522@^1.4.11
+          EOF
+          cp -r src /tmp/ci-flags/
+          cd /tmp/ci-flags && pio run -e esp32cam

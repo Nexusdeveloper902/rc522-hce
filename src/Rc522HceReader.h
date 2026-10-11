@@ -83,8 +83,6 @@
 
 namespace rc522hce {
 
-namespace rc522hce {
-
 // Pin defaults come from Rc522HceConfig.h, so a build flag or board preset
 // changes them without touching source — and default construction still works.
 static const uint8_t kDefaultSsPin = RC522HCE_SS_PIN;

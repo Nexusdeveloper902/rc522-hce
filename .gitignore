@@ -10,3 +10,4 @@
 venv/
 /tmp/consumer
 /tmp/flags
+__pycache__/

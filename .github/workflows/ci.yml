@@ -1,5 +1,8 @@
 name: CI
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
@@ -12,7 +15,9 @@ jobs:
     name: Host tests (pure C++, no board)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
       - name: Install PlatformIO Core into a venv (PEP 668 safe on 24.04)
         run: |
           python3 -m venv .venv
@@ -30,7 +35,9 @@ jobs:
         board: [esp32dev, megaatmega2560]
         example: [BasicTap, HceEnroll]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
       - name: Install PlatformIO Core into a venv (PEP 668 safe on 24.04)
         run: |
           python3 -m venv .venv
@@ -66,7 +73,9 @@ jobs:
     name: Rewire via build flags only (ESP32-CAM pins, custom AID)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
       - name: Install PlatformIO Core into a venv (PEP 668 safe on 24.04)
         run: |
           python3 -m venv .venv
@@ -119,8 +128,9 @@ jobs:
     name: Repo conventions (versions in sync, conventional commits)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
+          persist-credentials: false
           fetch-depth: 0
       - name: library.json and library.properties agree
         run: |
@@ -148,10 +158,126 @@ jobs:
             exit $fail
           fi
 
+  sanitizers:
+    name: Host tests under ASan+UBSan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+      - name: Install PlatformIO Core into a venv (PEP 668 safe on 24.04)
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip platformio
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+      - name: pio test -e native-san
+        run: pio test -e native-san
+
+  fuzz:
+    name: Fuzz wire parsers (libFuzzer, 60 s each)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+      - name: Build + run all fuzz targets (any crash fails the job)
+        run: |
+          for t in challenge enroll unhex strip verify aead; do
+            clang++ -std=c++11 -g -O1 -fsanitize=fuzzer,address -Isrc \
+              -o /tmp/fuzz_$t fuzz/fuzz_$t.cpp src/HceProtocol.cpp
+            /tmp/fuzz_$t fuzz/corpus/$t -max_total_time=60 -print_final_stats=1
+          done
+
+  coverage:
+    name: Native coverage gate (>= 90% lines)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+      - name: Install PlatformIO Core + gcovr into a venv
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip platformio gcovr
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+      - name: pio test -e native-cov, then enforce the gate
+        run: |
+          pio test -e native-cov
+          gcovr --root . --filter 'src/.*' --fail-under-line 90 --print-summary
+
+  hil-build:
+    name: HIL suite compiles for ESP32 (no hardware)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+      - name: Install PlatformIO Core into a venv (PEP 668 safe on 24.04)
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip platformio
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+      - name: Compile every test TU for the MCU (catches host-only drift)
+        run: |
+          rm -rf /tmp/hilbuild && mkdir -p /tmp/hilbuild/src /tmp/hilbuild/inc
+          cp test/*.cpp /tmp/hilbuild/src/
+          cp src/HceProtocol.cpp /tmp/hilbuild/src/
+          cp src/*.h /tmp/hilbuild/inc/
+          cat > /tmp/hilbuild/platformio.ini <<'EOF'
+          [env:hil]
+          platform = espressif32
+          framework = arduino
+          board = esp32dev
+          build_flags =
+              -DMFRC522_SPICLOCK=1000000u
+              -Iinc
+          lib_deps =
+              miguelbalboa/MFRC522@^1.4.11
+              throwtheswitch/Unity@^2.6.1
+          EOF
+          pio run -d /tmp/hilbuild -e hil
+
+  backend-test:
+    name: Reference backend tests (stdlib unittest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+      - name: python3 -m unittest (no dependencies)
+        working-directory: extras/reference-backend
+        run: python3 -m unittest test_hce_backend -v
+
+  arduino-lint:
+    name: Arduino Lint (library-manager submit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+      - uses: arduino/arduino-lint-action@9a3603836c75e41753e531167395edeb90ba5dae  # v3.0.0
+        with:
+          version: v1.3.0
+          library-manager: submit
+          compliance: permissive
+
+  workflow-lint:
+    name: Workflow lint (zizmor)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+      - name: zizmor stays clean
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet zizmor==1.30.1
+          .venv/bin/zizmor .github/workflows/
+
   gate:
     name: CI gate
     runs-on: ubuntu-latest
-    needs: [host-tests, cross-compile, rewire-by-build-flags, meta]
+    needs: [host-tests, cross-compile, rewire-by-build-flags, meta, sanitizers, fuzz, coverage, hil-build, backend-test, arduino-lint, workflow-lint]
     if: always()
     steps:
       - name: Fail if any required job failed
@@ -161,3 +287,61 @@ jobs:
             *failure*|*cancelled*) echo "Required CI jobs did not all pass."; exit 1;;
           esac
           echo "All required CI jobs passed."
+
+  release:
+    name: Release on green main
+    runs-on: ubuntu-latest
+    needs: [gate]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Resolve version
+        id: version
+        run: |
+          VERSION="$(python3 -c "import json;print(json.load(open('library.json'))['version'])")"
+          echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "Bad version: $VERSION"; exit 1; }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Skip if already released
+        id: exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "released=true" >> "$GITHUB_OUTPUT"
+            echo "Release $TAG already exists — nothing to do."
+          else
+            echo "released=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build notes from CHANGELOG
+        if: steps.exists.outputs.released == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python3 - <<'EOF'
+          import os
+          import re
+          version = os.environ["VERSION"]
+          text = open("CHANGELOG.md").read()
+          m = re.search(
+              r"^## \[%s\] - \d{4}-\d{2}-\d{2}\n(.*?)(?=^## \[|\Z)" % re.escape(version),
+              text, re.M | re.S)
+          body = m.group(1).strip() if m else ""
+          open("/tmp/notes.md", "w").write(body + "\n" if body else "")
+          print("changelog notes:", "found" if body else "missing (will use generated notes)")
+          EOF
+      - name: Create release
+        if: steps.exists.outputs.released == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if [ -s /tmp/notes.md ]; then ARGS="--notes-file /tmp/notes.md"; else ARGS="--generate-notes"; fi
+          # shellcheck disable=SC2086
+          gh release create "$TAG" --target "${{ github.sha }}" --title "$TAG" $ARGS

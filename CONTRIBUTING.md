@@ -19,7 +19,9 @@ deliberately higher than for docs and examples.
 
 ```sh
 pip install platformio          # or: python3 -m venv .venv && .venv/bin/pip install platformio
-pio test -e native              # 106 host-side Unity tests, no board needed
+pio test -e native              # 109 host-side Unity tests, no board needed
+pio test -e native-san          # same suite under AddressSanitizer + UBSan
+pio test -e native-cov          # same suite with coverage (gate: 90% lines on src/)
 ```
 
 Build the examples exactly like a consumer does (library in `lib/`):
@@ -55,18 +57,38 @@ Scope (`feat(radio): …`) and `!` breaking markers welcome.
   mandatory sections, not optional).
 - Keep PRs small and linear; rebase onto `main`, no merge commits.
 - The code owner is auto-requested for review (see `.github/CODEOWNERS`).
+- Beyond unit tests, CI also runs: sanitizers, libFuzzer targets
+  (`fuzz/`, 60 s each — reproduce locally per `fuzz/README.md`),
+  coverage gate, ESP32/Mega cross-compiles, HIL-suite compile check,
+  reference-backend unittest, Arduino Lint, and zizmor. New wire-parser
+  code needs a fuzz seed in `fuzz/corpus/<target>/` plus a regression
+  unit test in `test/`.
 
 ## Releases (maintainer)
 
-Releases are cut by the CD workflow, not by hand:
+Releases are cut by the release job in CI, not by hand:
 
-1. Bump `version` in **both** `library.json` and `library.properties`
-   (CI fails if they disagree).
+1. Add a `CHANGELOG.md` entry under a new `## [x.y.z] - YYYY-MM-DD`
+   section (release notes come from there; missing section falls back to
+   generated notes), and bump `version` in **both** `library.json` and
+   `library.properties` (CI fails if they disagree).
 2. Push to `main`. Green CI → tag `v<version>` + GitHub release appear
    automatically. Re-pushing the same version releases nothing.
 3. Breaking wire/protocol changes need a major bump **and** a versioned
    migration: phone app + reader + backend + new pinned test vector
-   move together. `PROTOCOL_VERSION` never changes silently.
+   move together (`docs/MIGRATION.md`). `PROTOCOL_VERSION` never changes
+   silently.
+
+## Publishing (maintainer, one-time + per release)
+
+- Arduino Library Manager: request indexing once by opening a submission
+  issue on [`arduino/library-registry`](https://github.com/arduino/library-registry)
+  (see their FAQ); every release tag is then picked up automatically. Keep
+  `arduino-lint` (CI) clean — especially `library.properties`,
+  `keywords.txt`, and `examples/` layout.
+- PlatformIO registry: `pio pkg publish` (maintainer account) after a
+  release so `lib_deps = NexusDeveloper902/RC522-HCE@^x.y.z` works
+  without a git URL.
 
 ## Security issues
 

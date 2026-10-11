@@ -1,0 +1,62 @@
+# Arduino IDE syntax highlighting for RC522-HCE.
+# Format: <identifier><tab><kind>  (KEYWORD1 = type, KEYWORD2 = method/function,
+# LITERAL1 = constant). Kept to the public surface from HceReader.h.
+
+HceReader	KEYWORD1
+NfcReader	KEYWORD1
+Rc522HceReader	KEYWORD1
+MockNfcReader	KEYWORD1
+CardDebouncer	KEYWORD1
+HceProof	KEYWORD1
+CredentialKind	KEYWORD1
+Tap	KEYWORD1
+ChallengeResponse	KEYWORD1
+SelectOutcome	KEYWORD1
+Rc522HceOptions	KEYWORD1
+
+read	KEYWORD2
+begin	KEYWORD2
+poll	KEYWORD2
+setEnrollment	KEYWORD2
+setAid	KEYWORD2
+selectedAid	KEYWORD2
+healthy	KEYWORD2
+label	KEYWORD2
+transport	KEYWORD2
+verifyProof	KEYWORD2
+wrapKeyHex	KEYWORD2
+unwrapKeyHex	KEYWORD2
+selfCheckVector	KEYWORD2
+statusWordName	KEYWORD2
+toHex	KEYWORD2
+fromHex	KEYWORD2
+unhex	KEYWORD2
+sha256Hex	KEYWORD2
+sha256Bytes	KEYWORD2
+hmacSha256	KEYWORD2
+chacha20Block	KEYWORD2
+chacha20Poly1305Encrypt	KEYWORD2
+chacha20Poly1305Decrypt	KEYWORD2
+buildSelectAid	KEYWORD2
+buildSelectAidWith	KEYWORD2
+buildChallenge	KEYWORD2
+buildEnroll	KEYWORD2
+parseSelectResponse	KEYWORD2
+parseChallengeResponse	KEYWORD2
+parseEnrollResponse	KEYWORD2
+isOk	KEYWORD2
+isKeyMissing	KEYWORD2
+fillRandomBytes	KEYWORD2
+pushTap	KEYWORD2
+shouldProcess	KEYWORD2
+markAbsent	KEYWORD2
+
+Physical	LITERAL1
+Hce	LITERAL1
+PROTOCOL_VERSION	LITERAL1
+KEY_WRAP_VERSION	LITERAL1
+NONCE_LEN	LITERAL1
+HMAC_LEN	LITERAL1
+KEY_LEN	LITERAL1
+KEY_NONCE_LEN	LITERAL1
+MAX_CRED_LEN	LITERAL1

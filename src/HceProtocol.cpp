@@ -655,13 +655,6 @@ void polyFinish(Poly1305* st, uint8_t mac[16]) {
     memset(st, 0, sizeof(*st));
 }
 
-void polyMac(const uint8_t key[32], const uint8_t* msg, size_t len, uint8_t mac[16]) {
-    Poly1305 st;
-    polyInit(&st, key);
-    polyUpdate(&st, msg, len);
-    polyFinish(&st, mac);
-}
-
 // One-time Poly1305 key: first 32 bytes of ChaCha20(key, counter 0, nonce).
 void polyKeyGen(const uint8_t key[32], const uint8_t nonce[12], uint8_t otk[32]) {
     uint8_t block[64];

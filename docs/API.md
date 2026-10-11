@@ -1323,7 +1323,10 @@ server unwraps (§11.3), requires CHALLENGE proof under candidate, stores
 
 ## 13. Interop checklist (new phone app / new backend)
 
-Prove a new side matches **before** touching hardware:
+Prove a new side matches **before** touching hardware (backend authors:
+start from the tested reference in `extras/reference-backend/` instead of
+retyping §11 snippets; breaking changes are listed in
+`docs/MIGRATION.md`):
 
 1. `HceReader::selfCheckVector()` (or `verifyProof(kCredId, kNonceHex,
    kMacHex, unhex(kKeyHex))`) must be `true`.
@@ -1334,7 +1337,7 @@ Prove a new side matches **before** touching hardware:
    `kKeyHex`, and must return `0` for a wrong secret or flipped byte.
 4. Builders must emit the exact bytes (§2.2); parsers must accept the
    vector CHALLENGE response and reject the `Malformed` shapes
-   (`pio test -e native` pins all of these — 106 tests, no board).
+   (`pio test -e native` pins all of these — 109 tests, no board).
 5. Only then debug on hardware (`SAK=0x20 ATS=0B` = RF/placement, `6A82`
    = AID/routing, `6A88` = unenrolled, `6985` = window closed).
 
@@ -1410,6 +1413,7 @@ every failure so MIFARE taps are unaffected.
 | Timestamped logs | `<TsLog.h>` | Arduino `Print` |
 | Build-flag pins/timings | `<Rc522HceConfig.h>` | auto-pulled by the driver |
 | Adopting legacy names | `<CompatNames.h>` | migration only, includes nothing else |
+| Reference backend (Python, zero-dep) | `extras/reference-backend/` | tested verify + replay table + enrollment; keep its vector in sync |
 
 Examples: [`../examples/BasicTap/BasicTap.ino`](../examples/BasicTap/BasicTap.ino)
 (minimal tap printer), [`../examples/HceEnroll/HceEnroll.ino`](../examples/HceEnroll/HceEnroll.ino)

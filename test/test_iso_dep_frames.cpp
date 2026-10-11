@@ -144,6 +144,14 @@ void test_block_resync_is_the_opposite_of_what_the_phone_echoed(void) {
     TEST_ASSERT_FALSE(nextBlockNumber(0x03));
 }
 
+void test_strip_rejects_prologue_plus_crc_only(void) {
+    // 5-byte I-block with CID+NAD but zero INF: prologue(3) + CRC(2),
+    // no application data — must refuse, not return an empty INF.
+    const uint8_t frame[] = {0x0C, 0x00, 0x00, 0xAA, 0xBB};
+    size_t off = 0, len = 0;
+    TEST_ASSERT_FALSE(stripIBlock(frame, sizeof(frame), 64, off, len));
+}
+
 void runIsoDepFrameTests() {
     RUN_TEST(test_sak_0x20_promises_iso_dep);
     RUN_TEST(test_sak_mifare_values_do_not_promise_iso_dep);
@@ -155,5 +163,6 @@ void runIsoDepFrameTests() {
     RUN_TEST(test_strip_i_block_with_cid_and_nad);
     RUN_TEST(test_strip_rejects_non_i_blocks_and_runt_frames);
     RUN_TEST(test_strip_rejects_oversize_inf);
+    RUN_TEST(test_strip_rejects_prologue_plus_crc_only);
     RUN_TEST(test_block_resync_is_the_opposite_of_what_the_phone_echoed);
 }

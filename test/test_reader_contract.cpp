@@ -221,6 +221,33 @@ void test_simulated_enrollment_wraps_and_unwraps(void) {
     memset(unwrapped, 0, sizeof(unwrapped));
 }
 
+class BareReader : public NfcReader {
+public:
+    bool begin() override { return true; }
+    bool poll(std::string& idOut) override {
+        idOut = "X";
+        return true;
+    }
+    const char* label() const override { return "BARE"; }
+};
+
+void test_base_defaults_are_safe(void) {
+    // A minimal transport gets sane behavior without overriding anything.
+    BareReader r;
+    TEST_ASSERT_TRUE(r.kind() == CredentialKind::Physical);
+    TEST_ASSERT_EQUAL_STRING("physical", r.lastKind());
+    TEST_ASSERT_FALSE(r.lastProof().present());
+    TEST_ASSERT_TRUE(r.healthy());
+    TEST_ASSERT_NOT_NULL(r.aid());
+    TEST_ASSERT_EQUAL_size_t(7, r.aidLen());
+    TEST_ASSERT_FALSE(r.setAid(nullptr, 0));
+    r.setEnrollment(true, "s");  // default no-op, must not crash
+    r.setEnrollment(false, "");
+    NfcReader* poly = new BareReader();  // virtual dispatch + teardown
+    TEST_ASSERT_NOT_NULL(poly->label());
+    delete poly;
+}
+
 void runReaderContractTests() {
     RUN_TEST(test_mock_begin_always_succeeds);
     RUN_TEST(test_mock_poll_is_false_when_idle);
@@ -231,6 +258,7 @@ void runReaderContractTests() {
     RUN_TEST(test_mock_label_is_nonempty);
     RUN_TEST(test_mock_default_kind_is_physical_and_proof_empty);
     RUN_TEST(test_transport_failure_leaves_stale_kind_and_proof);
+    RUN_TEST(test_base_defaults_are_safe);
     RUN_TEST(test_proof_empty_by_default);
     RUN_TEST(test_proof_present_needs_nonce_and_mac);
     RUN_TEST(test_proof_key_needs_wrapped_and_nonce);

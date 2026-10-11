@@ -44,7 +44,13 @@ src/
                         existing codebase without renaming call sites
   CardDebouncer.h       re-read suppression (pure C++, host-tested)
   MockNfcReader.h       hardware-free transport for dev/tests (pure C++)
-test/                   106 host-side Unity tests (`pio test -e native`)
+test/                   109 host-side Unity tests (`pio test -e native`)
+                        + ASan/UBSan (`native-san`), coverage gate (`native-cov`),
+                        on-device HIL suite (`esp32test`, needs a wired board)
+fuzz/                   libFuzzer targets for every wire parser + corpus (CI 60 s each)
+extras/reference-backend/  zero-dependency Python server (verify + atomic replay
+                        table + enrollment), tested against the shared vector
+tools/                  build helpers (coverage link flags)
 examples/               Arduino sketches (BasicTap, HceEnroll)
 docs/                   protocol spec + wiring guide + API reference (API.md) + security model (SECURITY.md)
 ```
@@ -317,10 +323,12 @@ Shared test vector (pinned in `test/` — verify your app against it):
 ## Tests
 
 ```sh
-pio test -e native   # 106 tests, no board needed
+pio test -e native       # 109 tests, no board needed
+pio test -e native-san   # same suite under ASan + UBSan
+pio test -e native-cov   # same suite with coverage (gate: 90% lines on src/)
 ```
 
-Seven suites: APDU wire contract (byte-exact builders, every parser shape),
+The native run covers seven suites: APDU wire contract (byte-exact builders, every parser shape),
 crypto trust contract (RFC 4231 + FIPS vectors + tamper properties +
 key-wrap/unwrap + RNG seam + RFC 8439 ChaCha20-Poly1305 vectors), ISO-DEP RF contract (SAK, PCB classes, I-block
 stripping, block resync), debounce rules, the transport contract incl.
@@ -329,6 +337,34 @@ physical tap, typed kind incl. legacy-string fallback, proof forwarding,
 enrollment, health), and the exposed protocol surface (versions, kind,
 replay-is-server-side, unwrap) — that test file includes only `HceReader.h`,
 so the docs cannot promise something the API stops exposing.
+
+Beyond unit tests: `fuzz/` hammers every wire parser under libFuzzer +
+ASan (CI, 60 s per target), and `test/test_hil_radio.cpp` runs on-device
+(`pio test -e esp32test` with a wired RC522 — vector, RNG, and live
+radio probe; RF assertions ignore gracefully when unwired). The Python
+reference backend has its own suite (`extras/reference-backend`,
+`python3 -m unittest test_hce_backend -v`).
+
+## Boards — support matrix and resource budget
+
+| Board | Validation | Notes |
+|---|---|---|
+| ESP32 DevKit (VSPI) | Bench-validated: HCE taps + MIFARE | The reference target; `esp_random` approved RNG |
+| ESP32-CAM | Compiles (CI rewire job), same silicon | Custom pins via build flags; camera + reader share 3V3 budget |
+| Mega 2560 | Compiles (CI); app fits (32% RAM) | Verified numbers below; use Mega over UNO for real HCE use |
+| UNO/Nano (ATmega328P) | Compiles; **RAM overflow** with full HCE app | Needs ArduinoSTL shim; Mega or 32-bit for real use |
+| ESP8266 / RP2040 / STM32 | Board presets + constructor wiring only | Not bench-validated — please report results |
+
+Measured firmware sizes (release builds, `BasicTap` / `HceEnroll`):
+
+| Example | ESP32 flash | ESP32 RAM | Mega flash | Mega RAM |
+|---|---|---|---|---|
+| BasicTap | 306 KB (23%) | 21.9 KB (6.7%) | 36.1 KB (14.2%) | 2629 B (32.1%) |
+| HceEnroll | 306 KB (23%) | 21.9 KB (6.7%) | 36.3 KB (14.3%) | 2651 B (32.4%) |
+
+HCE tap latency is roughly half a second of radio contact (RATS/ATS,
+SELECT, CHALLENGE, S(WTX) rounds) — hold the phone steady until the tap
+registers; see `docs/WIRING.md`.
 
 ## License
 

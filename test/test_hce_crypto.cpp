@@ -402,6 +402,29 @@ void test_aead_handles_empty_aad_and_plaintext(void) {
     TEST_ASSERT_TRUE(chacha20Poly1305Decrypt(key, nonce, nullptr, 0, nullptr, 0, tag, back));
 }
 
+void test_aead_null_args_never_crash(void) {
+    // Never-crash contract for every null combination.
+    uint8_t key[32] = {0};
+    uint8_t nonce[12] = {0};
+    uint8_t buf[64] = {0};
+    uint8_t tag[16] = {0};
+    chacha20Block(nullptr, 0, nonce, buf);
+    chacha20Block(key, 0, nullptr, buf);
+    chacha20Block(key, 0, nonce, nullptr);
+    chacha20Poly1305Encrypt(nullptr, nonce, nullptr, 0, nullptr, 0, buf, tag);
+    chacha20Poly1305Encrypt(key, nullptr, nullptr, 0, nullptr, 0, buf, tag);
+    chacha20Poly1305Encrypt(key, nonce, nullptr, 0, nullptr, 0, nullptr, tag);
+    chacha20Poly1305Encrypt(key, nonce, nullptr, 0, nullptr, 0, buf, nullptr);
+    chacha20Poly1305Encrypt(key, nonce, buf, 4, nullptr, 4, buf, tag);  // len>0, null pt
+    TEST_ASSERT_FALSE(chacha20Poly1305Decrypt(nullptr, nonce, nullptr, 0, buf, 16, tag, buf));
+    TEST_ASSERT_FALSE(chacha20Poly1305Decrypt(key, nullptr, nullptr, 0, buf, 16, tag, buf));
+    TEST_ASSERT_FALSE(chacha20Poly1305Decrypt(key, nonce, nullptr, 0, buf, 16, tag, nullptr));
+    TEST_ASSERT_FALSE(chacha20Poly1305Decrypt(key, nonce, nullptr, 0, nullptr, 16, tag, buf));
+    TEST_ASSERT_TRUE(toHex(nullptr, 8).empty());
+    uint8_t out[8];
+    TEST_ASSERT_EQUAL_size_t(0, unhex("0011", nullptr, sizeof(out)));
+}
+
 void runHceCryptoTests() {
     RUN_TEST(test_sha256_empty_string);
     RUN_TEST(test_sha256_abc);
@@ -426,4 +449,5 @@ void runHceCryptoTests() {
     RUN_TEST(test_aead_short_message_with_aad_round_trip);
     RUN_TEST(test_aead_matches_rfc8439_section_2_8_2);
     RUN_TEST(test_aead_handles_empty_aad_and_plaintext);
+    RUN_TEST(test_aead_null_args_never_crash);
 }

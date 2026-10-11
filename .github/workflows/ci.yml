@@ -40,7 +40,7 @@ jobs:
           BOARD: ${{ matrix.board }}
           EXAMPLE: ${{ matrix.example }}
         run: |
-          rm -rf /tmp/consumer && mkdir -p /tmp/consumer/src
+          rm -rf /tmp/consumer && mkdir -p /tmp/consumer/src /tmp/consumer/lib
           cp "examples/${EXAMPLE}/${EXAMPLE}.ino" /tmp/consumer/src/main.cpp
           ln -s "$GITHUB_WORKSPACE" /tmp/consumer/lib/RC522-HCE
           deps="miguelbalboa/MFRC522@^1.4.11"
@@ -73,7 +73,7 @@ jobs:
           echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
       - name: Pins, timings and (runtime) AID change without touching source
         run: |
-          rm -rf /tmp/flags && mkdir -p /tmp/flags/src
+          rm -rf /tmp/flags && mkdir -p /tmp/flags/src /tmp/flags/lib
           ln -s "$GITHUB_WORKSPACE" /tmp/flags/lib/RC522-HCE
           cat > /tmp/flags/src/main.cpp <<'EOF'
           #include <Arduino.h>

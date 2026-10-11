@@ -257,7 +257,7 @@ jobs:
           persist-credentials: false
       - uses: arduino/arduino-lint-action@9a3603836c75e41753e531167395edeb90ba5dae  # v3.0.0
         with:
-          version: v1.3.0
+          version: 1.3.0
           library-manager: submit
           compliance: permissive
 

@@ -44,7 +44,7 @@ src/
   MockNfcReader.h       hardware-free transport for dev/tests (pure C++)
 test/                   95 host-side Unity tests (`pio test -e native`)
 examples/               Arduino sketches (BasicTap, HceEnroll)
-docs/                   protocol spec + wiring guide
+docs/                   protocol spec + wiring guide + API reference (API.md)
 ```
 
 ## Install
@@ -239,6 +239,9 @@ It is deliberately included by no other header, so it can never become a hidden
 dependency, and its Arduino-only aliases are guarded so it also compiles in host tests.
 
 ## API at a glance
+
+> Full reference with signatures, byte layouts, return codes, backend
+> snippets and troubleshooting: [`docs/API.md`](docs/API.md).
 
 Everything a phone app, reader firmware, or backend needs — all reachable from the single
 header `HceReader.h`:

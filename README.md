@@ -35,9 +35,14 @@ src/
                         key-wrap, ISO-DEP frame helpers (host-testable)
   NfcReader.h           transport interface + HceProof relay struct
   Rc522HceReader.h      radio driver (MFRC522 over SPI) — device only
+  Rc522HceConfig.h      PINS/TIMINGS/AID configuration — build flags, no
+                        source edits (board presets auto-detected)
+  TsLog.h               timestamped Print decorator (diagnostics sink)
+  CompatNames.h         OPTIONAL legacy-name aliases, for adopting into an
+                        existing codebase without renaming call sites
   CardDebouncer.h       re-read suppression (pure C++, host-tested)
   MockNfcReader.h       hardware-free transport for dev/tests (pure C++)
-test/                   86 host-side Unity tests (`pio test -e native`)
+test/                   95 host-side Unity tests (`pio test -e native`)
 examples/               Arduino sketches (BasicTap, HceEnroll)
 docs/                   protocol spec + wiring guide
 ```
@@ -165,6 +170,74 @@ and behaves identically on every board — only pins and the RNG source vary.
 Without hardware (dev/tests): `rc522hce::MockNfcReader` implements the same
 `NfcReader` interface — wrap it in `HceReader` exactly like the radio.
 
+## Configuration — build flags, not source edits
+
+Nothing about the wiring, timings or AID requires editing the library. Every knob in
+`src/Rc522HceConfig.h` is `#ifndef`-guarded, so a build flag always wins, board presets
+cover the common boards when you do not override, and defaults apply otherwise:
+
+```ini
+; platformio.ini
+build_flags =
+    -DRC522HCE_SS_PIN=13       ; your RC522 SDA/SS
+    -DRC522HCE_RST_PIN=255     ; 255 = RST strapped to 3V3 (no pin driven)
+    -DRC522HCE_SCK_PIN=14
+    -DRC522HCE_MISO_PIN=2
+    -DRC522HCE_MOSI_PIN=15
+    -DRC522HCE_DEBOUNCE_MS=1500
+    -DMFRC522_SPICLOCK=1000000u
+```
+
+Auto-detected when you do not override: **ESP32** (DevKit VSPI), **AVR** (Mega SS 53 /
+UNO-Nano SS 10 — SCK/MISO/MOSI are fixed hardware SPI there), **ESP8266** (NodeMCU),
+**RP2040** (Pico), **STM32** (SPI1). Opt out entirely with `-DRC522HCE_NO_BOARD_PRESET`.
+Resolution order is build flag → board preset → default, and it applies to
+default-constructed readers too, so `Rc522HceReader radio;` is always correctly wired —
+no silent wrong-pin trap.
+
+| Knob | Build flag | Default |
+|---|---|---|
+| SS / RST / SCK / MISO / MOSI | `RC522HCE_{SS,RST,SCK,MISO,MOSI}_PIN` | preset or DevKit pins |
+| AID the phone app must serve | `RC522HCE_AID_BYTES=0xF0,…` | `F0010203040506` |
+| Re-read suppression window | `RC522HCE_DEBOUNCE_MS` | 2000 |
+| PCD retry / health-probe cadence | `RC522HCE_REINIT_INTERVAL_MS` | 5000 |
+| Park-and-activate settle window | `RC522HCE_HCE_SETTLE_MS` | 400 |
+| SPI clock (read by the MFRC522 lib) | `MFRC522_SPICLOCK` | 1000000 (1 MHz) |
+
+The AID is special: it is the contract between your reader and your phone app, so it can
+be changed **at runtime** with no reflash and no source edit:
+
+```cpp
+const uint8_t myAid[] = {0xD1, 0x76, 0x00, 0x00, 0x85};
+if (!reader.setAid(myAid, sizeof(myAid))) { /* rejected — 1..11 bytes */ }
+// reader.selectedAid() / selectedAidLen() reports what a phone must serve
+```
+
+Timings that need to change per loop iteration (rather than per build) stay in code:
+
+```cpp
+rc522hce::Rc522HceOptions opts;
+opts.reinitIntervalMs = 5000;   // PCD retry + runtime probe cadence
+opts.hceSettleMs = 400;         // park-and-activate radio-silence window
+rc522hce::Rc522HceReader radio(/*ss=*/13, /*rst=*/255 /*3V3-strapped*/,
+                               /*sck=*/14, /*miso=*/2, /*mosi=*/15,
+                               &Serial, opts);
+```
+
+## Adopting into an existing codebase
+
+If your project already talks to a reader with the historical API names
+(`Presence::Rc522NfcReader`, `Presence::Hce::buildSelectAid`, `Presence::HceProof`,
+`Presence::Signer::toHex`), include the optional alias layer and existing call sites keep
+compiling — the aliases are the *same types*, so values cross the seam both ways:
+
+```cpp
+#include <CompatNames.h>   // optional, migration only; not a dependency of anything
+```
+
+It is deliberately included by no other header, so it can never become a hidden
+dependency, and its Arduino-only aliases are guarded so it also compiles in host tests.
+
 ## API at a glance
 
 Everything a phone app, reader firmware, or backend needs — all reachable from the single
@@ -177,6 +250,7 @@ header `HceReader.h`:
 | `tap.isHce`, `tap.proof.nonceHex`, `tap.proof.macHex` | how it was identified + the transcript to relay |
 | `tap.proof.keyWrappedHex`, `tap.proof.keyNonceHex` | enrollment taps only: the phone's key, wrapped |
 | `reader.setEnrollment(on, readerSecret)` | turn enrollment mode on; the only secret the reader holds |
+| `reader.setAid(bytes, len)`, `selectedAid()`, `selectedAidLen()` | change the AID at runtime; report what a phone must serve |
 | `HceReader::verifyProof(proof, credId, credKey)` | **backend**: verify a relayed tap, constant-time |
 | `HceReader::aid()`, `aidLen()` | the AID the phone's HCE app must serve (`F0010203040506`) |
 | `HceReader::nonceLen()`, `macLen()`, `keyLen()`, `maxCredentialLen()` | protocol lengths (8 / 32 / 32 / 32) |
@@ -184,7 +258,7 @@ header `HceReader.h`:
 | `HceReader::toHex()`, `HceReader::fromHex()` | wire transcripts and wrapped keys are hex |
 | `HceReader::selfCheckVector()` | true when the shared interop vector verifies |
 | `TestVector::*` | the pinned vector: credId, key, nonce, MAC, reader secret, wrapped key |
-| `buildSelectAid()`, `buildChallenge()`, `buildEnroll()` | the exact APDU bytes (for custom transports) |
+| `buildSelectAid()`, `buildSelectAidWith()`, `buildChallenge()`, `buildEnroll()` | the exact APDU bytes (for custom transports) |
 | `parseSelectResponse()`, `parseChallengeResponse()`, `isKeyMissing()` | response classification |
 | `hmacSha256()`, `sha256Bytes()`, `wrapKeyHex()` | the crypto, dependency-free |
 | `MockNfcReader`, `CardDebouncer` | hardware-free development, and the 1-tap rule |
@@ -233,7 +307,7 @@ Shared test vector (pinned in `test/` — verify your app against it):
 ## Tests
 
 ```sh
-pio test -e native   # 86 tests, no board needed
+pio test -e native   # 95 tests, no board needed
 ```
 
 Seven suites: APDU wire contract (byte-exact builders, every parser shape),

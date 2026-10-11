@@ -1,6 +1,6 @@
 {
   "name": "RC522-HCE",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "RC522 NFC reader with Android-HCE phone-as-credential identification: ISO-DEP SELECT AID + challenge-response (HMAC-SHA256), enrollment key-wrap, debounce and mock reader. Host-testable pure C++ core + ESP32 Arduino driver.",
   "keywords": ["rc522", "mfrc522", "nfc", "hce", "iso-dep", "esp32", "identification"],
   "repository": {
@@ -16,7 +16,7 @@
   "license": "Apache-2.0",
   "frameworks": ["arduino"],
   "platforms": "*",
-  "headers": ["HceReader.h", "HceProtocol.h", "NfcReader.h", "Rc522HceReader.h", "CardDebouncer.h", "MockNfcReader.h"],
+  "headers": ["HceReader.h", "HceProtocol.h", "NfcReader.h", "Rc522HceReader.h", "Rc522HceConfig.h", "TsLog.h", "CompatNames.h", "CardDebouncer.h", "MockNfcReader.h"],
   "dependencies": {
     "miguelbalboa/MFRC522": "^1.4.11"
   }

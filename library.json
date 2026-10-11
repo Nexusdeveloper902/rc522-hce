@@ -1,11 +1,11 @@
 {
-  "name": "ESP32-RC522-HCE",
+  "name": "RC522-HCE",
   "version": "1.0.0",
   "description": "RC522 NFC reader with Android-HCE phone-as-credential identification: ISO-DEP SELECT AID + challenge-response (HMAC-SHA256), enrollment key-wrap, debounce and mock reader. Host-testable pure C++ core + ESP32 Arduino driver.",
   "keywords": ["rc522", "mfrc522", "nfc", "hce", "iso-dep", "esp32", "identification"],
   "repository": {
     "type": "git",
-    "url": "https://github.com/NexusDeveloper902/esp32-rc522-hce.git"
+    "url": "https://github.com/NexusDeveloper902/rc522-hce.git"
   },
   "authors": [
     {

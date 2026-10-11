@@ -308,6 +308,96 @@ std::string wrapKeyHex(const std::string& readerSecret,
     return out;
 }
 
+// --- Server-side verification ---------------------------------------------------
+
+namespace {
+
+/** Constant-time compare: a MAC comparison must not leak via timing. */
+bool constantTimeEqual(const uint8_t* a, const uint8_t* b, size_t n) {
+    volatile unsigned diff = 0;
+    for (size_t i = 0; i < n; i++) {
+        diff |= static_cast<unsigned>(a[i] ^ b[i]);
+    }
+    return diff == 0;
+}
+
+}  // namespace
+
+size_t unhex(const std::string& hex, uint8_t* out, size_t cap) {
+    if (out == nullptr || hex.empty() || (hex.size() % 2) != 0) {
+        return 0;
+    }
+    const size_t n = hex.size() / 2;
+    if (n > cap) {
+        return 0;
+    }
+    auto nibble = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    for (size_t i = 0; i < n; i++) {
+        const int hi = nibble(hex[2 * i]);
+        const int lo = nibble(hex[2 * i + 1]);
+        if (hi < 0 || lo < 0) {
+            return 0;
+        }
+        out[i] = static_cast<uint8_t>((hi << 4) | lo);
+    }
+    return n;
+}
+
+bool verifyProof(const std::string& credId, const std::string& nonceHex,
+                 const std::string& macHex, const uint8_t key[KEY_LEN]) {
+    if (key == nullptr || macHex.size() != HMAC_LEN * 2 || nonceHex.empty()) {
+        return false;
+    }
+    uint8_t nonce[NONCE_LEN];
+    uint8_t mac[HMAC_LEN];
+    if (unhex(nonceHex, nonce, sizeof(nonce)) != NONCE_LEN) {
+        return false;  // the reader always sends exactly NONCE_LEN
+    }
+    if (unhex(macHex, mac, sizeof(mac)) != HMAC_LEN) {
+        return false;
+    }
+    if (credId.empty() || credId.size() > MAX_CRED_LEN) {
+        return false;  // an id the protocol could not carry cannot verify
+    }
+    uint8_t msg[MAX_CRED_LEN + NONCE_LEN];
+    memcpy(msg, credId.data(), credId.size());
+    memcpy(msg + credId.size(), nonce, NONCE_LEN);
+    uint8_t expected[HMAC_LEN];
+    hmacSha256(key, KEY_LEN, msg, credId.size() + NONCE_LEN, expected);
+    memset(msg, 0, sizeof(msg));
+    return constantTimeEqual(mac, expected, HMAC_LEN);
+}
+
+const char* statusWordName(uint8_t sw1, uint8_t sw2) {
+    if (sw1 == 0x90 && sw2 == 0x00) {
+        return "9000 (success)";
+    }
+    if (sw1 == 0x6A && sw2 == 0x82) {
+        return "6A82 (app/AID not found — no app routed to our AID)";
+    }
+    if (sw1 == 0x6A && sw2 == 0x88) {
+        return "6A88 (no key provisioned on the phone — enroll it)";
+    }
+    if (sw1 == 0x69 && sw2 == 0x85) {
+        return "6985 (conditions not satisfied — enrollment window closed)";
+    }
+    if (sw1 == 0x67 && sw2 == 0x00) {
+        return "6700 (wrong length)";
+    }
+    if (sw1 == 0x6D && sw2 == 0x00) {
+        return "6D00 (INS unknown)";
+    }
+    if (sw1 == 0x6E && sw2 == 0x00) {
+        return "6E00 (CLA unknown)";
+    }
+    return nullptr;
+}
+
 // --- ISO-DEP helpers --------------------------------------------------------
 
 bool sakPromisesIsoDep(uint8_t sak) {

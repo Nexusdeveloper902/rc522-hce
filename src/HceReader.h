@@ -9,14 +9,33 @@
  *   HceReader::Tap tap;
  *   if (reader.read(tap, millis())) { ... }   // exactly once per physical tap
  *
+ * THIS HEADER IS THE WHOLE API. Everything the system needs beyond read() —
+ * the AID a phone must serve, the challenge/MAC lengths, ISO-DEP status
+ * words, the shared interop vector, and the backend verification of a
+ * relayed proof — is re-exported below (see "One-header protocol surface"),
+ * so `#include <HceReader.h>` is the only include an app or server needs.
+ *
+ * Where the keys live (the hce key model):
+ *   - K_cred is PER CREDENTIAL, generated and stored by the phone. Neither
+ *     the reader nor this library ever holds it.
+ *   - The reader sends its own nonce (AID exchange) and relays the phone's
+ *     MAC unverified; YOUR SERVER calls verifyProof() with that
+ *     credential's key to accept the tap.
+ *   - At enrollment the phone hands over K_cred once, inside the window the
+ *     holder opens, and the reader wraps it under the secret YOU pass to
+ *     setEnrollment(on, readerSecret) — never raw, never logged. Unwrap it
+ *     with the same wrapKeyHex-derived pad; then the server requires that
+ *     tap's CHALLENGE proof to verify under it before storing it.
+ *
  * Pure C++ (no Arduino headers): time is injected per call, so the whole
  * "one event per tap" contract is host-testable. On device pass millis();
  * in tests pass scripted timestamps.
  */
 #pragma once
 
-#include <stdint.h>
+#include <stdint.h>  // not <cstdint>: some toolchains ship no C++ stdlib
 #include <string>
+#include <cstring>  // memset — wiping key buffers
 
 #include "CardDebouncer.h"
 #include "NfcReader.h"
@@ -88,6 +107,66 @@ public:
 
     /** Direct access to the wrapped transport, for advanced use. */
     NfcReader& transport() { return reader_; }
+
+    // --- One-header protocol surface -----------------------------------------
+    // Re-exported so app/server code gets everything from this one header.
+    // (The driver is optional; the protocol is the contract.)
+
+    /** The AID your phone's HCE app must serve, e.g. F0010203040506. */
+    static const uint8_t* aid() { return AID; }
+    static size_t aidLen() { return AID_LEN; }
+    /** Challenge nonce length in bytes (8). */
+    static size_t nonceLen() { return NONCE_LEN; }
+    /** HMAC-SHA256 length in bytes (32). */
+    static size_t macLen() { return HMAC_LEN; }
+    /** Credential id length bounds accepted by the protocol (1..32). */
+    static size_t minCredentialLen() { return 1; }
+    static size_t maxCredentialLen() { return MAX_CRED_LEN; }
+    /** Per-credential key length in bytes (32). */
+    static size_t keyLen() { return KEY_LEN; }
+
+    /** ISO-DEP status word, human-readable (9000, 6A82, 6A88, 6985, 6700, 6D00, 6E00). */
+    static const char* statusWordName(uint8_t sw1, uint8_t sw2) {
+        return rc522hce::statusWordName(sw1, sw2);
+    }
+
+    /**
+     * Backend verification of one relayed HCE proof: recompute
+     * HMAC-SHA256(K_cred, credentialId || nonce) and compare in constant
+     * time. This is where the per-credential key is used — never on the
+     * reader. Reject when it returns false.
+     */
+    static bool verifyProof(const HceProof& proof, const std::string& credentialId,
+                            const uint8_t credKey[KEY_LEN]) {
+        return rc522hce::verifyProof(credentialId, proof.nonceHex, proof.macHex, credKey);
+    }
+
+    /** Lower-level form, straight from the wire (hex nonce + hex mac). */
+    static bool verifyProof(const std::string& credentialId,
+                            const std::string& nonceHex, const std::string& macHex,
+                            const uint8_t credKey[KEY_LEN]) {
+        return rc522hce::verifyProof(credentialId, nonceHex, macHex, credKey);
+    }
+
+    /** Hex helpers (relay transcripts and wrapped keys travel hex-encoded). */
+    static std::string toHex(const uint8_t* data, size_t len) {
+        return rc522hce::toHex(data, len);
+    }
+    static size_t fromHex(const std::string& hex, uint8_t* out, size_t cap) {
+        return rc522hce::unhex(hex, out, cap);
+    }
+
+    /** Shared interop test vector — prove a new phone app/backend matches. */
+    static bool selfCheckVector() {
+        uint8_t key[KEY_LEN];
+        if (rc522hce::unhex(TestVector::kKeyHex, key, sizeof(key)) != KEY_LEN) {
+            return false;
+        }
+        const bool ok = rc522hce::verifyProof(TestVector::kCredId, TestVector::kNonceHex,
+                                              TestVector::kMacHex, key);
+        memset(key, 0, sizeof(key));
+        return ok;
+    }
 
 private:
     NfcReader& reader_;

@@ -13,6 +13,7 @@ void runIsoDepFrameTests();
 void runDebouncerTests();
 void runReaderContractTests();
 void runFacadeTests();
+void runPublicApiTests();
 
 // Shared by every test (Unity calls these around each RUN_TEST).
 void setUp() {}
@@ -27,6 +28,7 @@ int main() {
     runDebouncerTests();     // tap debounce: one event per physical tap
     runReaderContractTests();  // NfcReader/mock + simulated end-to-end taps
     runFacadeTests();          // HceReader: the public configure-and-read API
+    runPublicApiTests();       // the exposed protocol surface (one include only)
 
     return UNITY_END();
 }

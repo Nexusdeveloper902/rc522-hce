@@ -134,6 +134,43 @@ std::string wrapKeyHex(const std::string& readerSecret,
                        const std::string& keyNonceHex,
                        const uint8_t key[KEY_LEN]);
 
+// --- Server-side verification of a relayed transcript ------------------------
+// The reader holds no HCE key: it relays nonce + MAC and the KEY lives in
+// your backend (and on the phone). This is that backend check, so every
+// layer of the system shares one implementation of the crypto instead of
+// three hand-rolled copies.
+
+/**
+ * Verify a relayed proof: recompute HMAC-SHA256(K_cred, credId || nonce)
+ * from the hex transcript and compare against macHex in CONSTANT TIME.
+ * Also rejects wrong lengths, odd hex, and credential ids out of range
+ * (a claim with an impossible id can never verify).
+ */
+bool verifyProof(const std::string& credId,
+                 const std::string& nonceHex,
+                 const std::string& macHex,
+                 const uint8_t key[KEY_LEN]);
+
+/** decode lowercase/uppercase hex → bytes. Returns bytes written; 0 on bad hex or short buffer. */
+size_t unhex(const std::string& hex, uint8_t* out, size_t cap);
+
+/** Human-readable ISO-DEP status word, or nullptr when unrecognized. */
+const char* statusWordName(uint8_t sw1, uint8_t sw2);
+
+// --- Shared interop test vector ----------------------------------------------
+// Computed outside this implementation and pinned in every port (phone app,
+// reader, backend). Use it to prove a new side matches BEFORE touching
+// hardware: the vector MAC must reproduce, and verifyProof must accept it.
+namespace TestVector {
+static const char* kCredId = "PLS-K3Y7V3CT0R5Z";
+static const char* kKeyHex = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+static const char* kNonceHex = "0123456789abcdef";
+static const char* kMacHex = "ba6d0fbf5106f79257727819d19a17b7e15abc4b8a0d1bfe71cd76090488a295";
+static const char* kReaderSecret = "test-secret-000000000000000001";  // the reader's secret at enrollment
+static const char* kKeyNonceHex = "000102030405060708090a0b0c0d0e0f";
+static const char* kKeyWrappedHex = "c5bb9fe15dff66a8636366dd4e73e0a3146601e3b3c36472961de142a9a914c2";
+}  // namespace TestVector
+
 // --- ISO-DEP / RF helpers (pure; bench-proven in Rc522HceReader) -------------
 // These encode the three bench-proven facts that make HCE-over-RC522 work, as testable predicates instead of inline
 // bit-twiddling inside the Arduino driver:

@@ -172,9 +172,18 @@ AID)` (`6A82`) · `HCE CHALLENGE timeout` · `HCE phone has NO key yet
 (6A88)` · `HCE CHALLENGE answer malformed` · `HCE ENROLL refused`
 (enrollment: the phone's window is not open). A wrong key is no longer a
 reader-side error: the tap reaches the server and is refused there.
-Every failure releases the target and the device stays responsive; MIFARE
-taps are never affected (that path never runs for ISO-DEP targets, and
-vice versa).
+
+Every status word on the wire is decodable from the public API —
+`HceReader::statusWordName(sw1, sw2)` returns the operator-facing text
+(`9000`, `6A82`, `6A88`, `6985`, `6700`, `6D00`, `6E00`), so applications
+do not hardcode their own table of these.
+
+Protocol builders, parsers, the HMAC/key-wrap primitives and the backend
+verification of a relayed proof are all part of the public API (see
+"API at a glance" in the README); this document is the byte-level
+reference they implement. Every failure releases the target and the
+device stays responsive; MIFARE taps are never affected (that path never
+runs for ISO-DEP targets, and vice versa).
 
 ## Timing facts the driver encodes
 

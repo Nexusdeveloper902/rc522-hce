@@ -57,8 +57,9 @@
  *  6. SPI at 1 MHz, not the library's 4 MHz default, over Dupont jumpers
  *     on a rail that sags during RF TX (-DMFRC522_SPICLOCK=1000000u).
  *
- * All wiring and timing is explicit constructor parameters with
- * ESP32-VSPI-compatible defaults, so any board/app can use it.
+ * All wiring and timing is explicit constructor parameters, so any board/app
+ * can use it. SPI pins are honored on cores that can route them (ESP32);
+ * other cores use their fixed hardware-SPI pins (see docs/WIRING.md).
  */
 #pragma once
 
@@ -81,7 +82,7 @@
 
 namespace rc522hce {
 
-// Default pins match the classic ESP32 DevKit VSPI wiring. Pass your own
+// Default pins suit the classic ESP32 DevKit VSPI wiring. Pass your own
 // pins for any other board (e.g. UNO: SS 10, RST 9, SCK 13, MISO 12,
 // MOSI 11 — see docs/WIRING.md).
 static const uint8_t kDefaultSsPin = 5;

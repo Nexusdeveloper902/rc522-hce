@@ -114,3 +114,50 @@ jobs:
               miguelbalboa/MFRC522@^1.4.11
           EOF
           pio run -d /tmp/flags -e esp32cam
+
+  meta:
+    name: Repo conventions (versions in sync, conventional commits)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: library.json and library.properties agree
+        run: |
+          J="$(python3 -c "import json;print(json.load(open('library.json'))['version'])")"
+          P="$(grep -E '^version=' library.properties | cut -d= -f2)"
+          echo "library.json=$J library.properties=$P"
+          [ "$J" = "$P" ] || { echo "Version mismatch — bump both files together."; exit 1; }
+      - name: Conventional commit messages / PR title
+        env:
+          EVENT: ${{ github.event_name }}
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          PAT='^((feat|fix|docs|test|ci|cd|security|chore|refactor|perf|build|style|revert)(\([^)]+\))?!?: .+|Merge .+|Release .+)$'
+          fail=0
+          if [ "$EVENT" = "pull_request" ]; then
+            echo "PR title: $TITLE"
+            echo "$TITLE" | grep -qiE "$PAT" || { echo "Title is not Conventional Commits."; exit 1; }
+          else
+            MSGS="$(git log --format=%s HEAD --not --remotes --max-count=20 2>/dev/null)"
+            [ -z "$MSGS" ] && echo "(no local-only commits to lint)"
+            while IFS= read -r s; do
+              [ -z "$s" ] && continue
+              echo "$s" | grep -qiE "$PAT" || { echo "NOT conventional: $s"; fail=1; }
+            done <<< "$MSGS"
+            exit $fail
+          fi
+
+  gate:
+    name: CI gate
+    runs-on: ubuntu-latest
+    needs: [host-tests, cross-compile, rewire-by-build-flags, meta]
+    if: always()
+    steps:
+      - name: Fail if any required job failed
+        run: |
+          echo "results: ${{ join(needs.*.result, ', ') }}"
+          case "${{ join(needs.*.result, ',') }}" in
+            *failure*|*cancelled*) echo "Required CI jobs did not all pass."; exit 1;;
+          esac
+          echo "All required CI jobs passed."

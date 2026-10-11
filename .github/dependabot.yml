@@ -1,0 +1,9 @@
+# Keep GitHub Actions pinned by Dependabot (weekly PRs for actions/*).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci

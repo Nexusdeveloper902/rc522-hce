@@ -1,5 +1,7 @@
 # RC522-HCE
 
+[![CI](https://github.com/NexusDeveloper902/rc522-hce/actions/workflows/CI/badge.svg)](https://github.com/NexusDeveloper902/rc522-hce/actions/workflows/CI)
+
 RC522 NFC reader with **Android-HCE phone-as-credential identification**, as a reusable
 Arduino / PlatformIO library for **any microcontroller** — ESP32, ESP8266, AVR (UNO/Nano/Mega),
 STM32, RP2040, nRF52, Teensy: anything with an Arduino core and SPI. One `read()` returns

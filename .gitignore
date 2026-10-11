@@ -6,3 +6,7 @@
 *.swp
 *~
 .DS_Store
+.venv/
+venv/
+/tmp/consumer
+/tmp/flags

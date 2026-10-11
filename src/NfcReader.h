@@ -80,13 +80,24 @@ public:
     /** Short label for the log. */
     virtual const char* label() const = 0;
 
-    /**
-     * True when the reader is responding. Radio drivers probe the chip
+    /** True when the reader is responding. Radio drivers probe the chip
      * and can revoke this at runtime; non-hardware readers are always
      * healthy. Used by apps to show a degraded state instead of dying
      * silently when the antenna stops answering.
      */
     virtual bool healthy() const { return true; }
+
+    /**
+     * The AID this reader SELECTs (the protocol AID by default). Radio
+     * drivers support changing it at runtime via setAid(); the interface
+     * only exposes the read side so apps can display/log it and compare it
+     * against what a phone app is configured for.
+     */
+    virtual const uint8_t* aid() const { return AID; }
+    virtual size_t aidLen() const { return AID_LEN; }
+
+    /** Change the selected AID (1..MAX_AID_LEN bytes). Default: ignored. */
+    virtual bool setAid(const uint8_t* /*aid*/, size_t /*len*/) { return false; }
 };
 
 }  // namespace rc522hce

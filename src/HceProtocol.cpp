@@ -4,17 +4,31 @@
 
 namespace rc522hce {
 
-size_t buildSelectAid(uint8_t* out, size_t cap) {
-    if (out == nullptr || cap < 5 + AID_LEN) {
+namespace {
+// Shared frame writer: 00 A4 04 00 Lc AID.
+size_t buildSelectAidInto(const uint8_t* aid, size_t aidLen, uint8_t* out, size_t cap) {
+    if (out == nullptr || cap < 5 + aidLen) {
         return 0;
     }
     out[0] = CLA_PROTO;
     out[1] = INS_SELECT;
     out[2] = 0x04;
     out[3] = 0x00;
-    out[4] = static_cast<uint8_t>(AID_LEN);
-    memcpy(out + 5, AID, AID_LEN);
-    return 5 + AID_LEN;
+    out[4] = static_cast<uint8_t>(aidLen);
+    memcpy(out + 5, aid, aidLen);
+    return 5 + aidLen;
+}
+}  // namespace
+
+size_t buildSelectAidWith(const uint8_t* aid, size_t aidLen, uint8_t* out, size_t cap) {
+    if (aid == nullptr || aidLen == 0 || aidLen > MAX_AID_LEN) {
+        return 0;
+    }
+    return buildSelectAidInto(aid, aidLen, out, cap);
+}
+
+size_t buildSelectAid(uint8_t* out, size_t cap) {
+    return buildSelectAidWith(AID, AID_LEN, out, cap);
 }
 
 size_t buildChallenge(const uint8_t nonce[NONCE_LEN], uint8_t* out, size_t cap) {

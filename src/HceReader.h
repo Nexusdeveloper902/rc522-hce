@@ -105,6 +105,23 @@ public:
     /** Short label of the underlying reader, for the log. */
     const char* label() const { return reader_.label(); }
 
+    /** The AID this reader SELECTs, and its length. Must match the phone app. */
+    const uint8_t* selectedAid() const { return reader_.aid(); }
+    size_t selectedAidLen() const { return reader_.aidLen(); }
+
+    /**
+     * Change the AID this reader SELECTs (1..11 bytes). The phone app must
+     * serve the same AID, so this is a deployment-time decision, not a
+     * per-tap knob. False = rejected, previous AID kept.
+     */
+    bool setAid(const uint8_t* aid, size_t len) {
+        const bool changed = reader_.setAid(aid, len);
+        if (changed) {
+            debouncer_.reset();  // a change of identity target starts fresh
+        }
+        return changed;
+    }
+
     /** Direct access to the wrapped transport, for advanced use. */
     NfcReader& transport() { return reader_; }
 

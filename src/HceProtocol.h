@@ -46,8 +46,15 @@ static const size_t KEY_NONCE_LEN = 16;  // key-wrap nonce (32 hex chars)
 // RC522 FIFO = 64 B: every message below fits one I-block (~57 B INF),
 // so no phone-side chaining is ever needed.
 
+/** Builds a SELECT AID command for an explicit AID. Returns 0 on bad args/short buffer. */
+size_t buildSelectAidWith(const uint8_t* aid, size_t aidLen, uint8_t* out, size_t cap);
+
 /** Builds: 00 A4 04 00 Lc AID (no Le). Returns bytes written (12), 0 when cap is short. */
 size_t buildSelectAid(uint8_t* out, size_t cap);
+
+// Longest AID the SELECT frame can carry while fitting the driver's
+// command buffer (5-byte header + AID must stay <= 16 bytes).
+static const size_t MAX_AID_LEN = 11;
 
 /** Builds: 80 10 00 00 Lc nonce (no Le). Returns bytes written (13), 0 when cap is short. */
 size_t buildChallenge(const uint8_t nonce[NONCE_LEN], uint8_t* out, size_t cap);

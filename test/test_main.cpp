@@ -14,6 +14,7 @@ void runDebouncerTests();
 void runReaderContractTests();
 void runFacadeTests();
 void runPublicApiTests();
+void runConfigTests();
 
 // Shared by every test (Unity calls these around each RUN_TEST).
 void setUp() {}
@@ -29,6 +30,7 @@ int main() {
     runReaderContractTests();  // NfcReader/mock + simulated end-to-end taps
     runFacadeTests();          // HceReader: the public configure-and-read API
     runPublicApiTests();       // the exposed protocol surface (one include only)
+    runConfigTests();          // build-flag config, AID override, legacy aliases
 
     return UNITY_END();
 }

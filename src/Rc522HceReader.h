@@ -75,6 +75,7 @@
 
 #include "HceProtocol.h"
 #include "NfcReader.h"
+#include "Rc522HceConfig.h"  // build-flag / board-preset configuration
 
 // There is NO HCE secret on the reader. Each phone has its own key
 // (Android Keystore) and the server verifies the relayed transcript
@@ -82,14 +83,15 @@
 
 namespace rc522hce {
 
-// Default pins suit the classic ESP32 DevKit VSPI wiring. Pass your own
-// pins for any other board (e.g. UNO: SS 10, RST 9, SCK 13, MISO 12,
-// MOSI 11 — see docs/WIRING.md).
-static const uint8_t kDefaultSsPin = 5;
-static const uint8_t kDefaultRstPin = 27;  // pass 255 (UNUSED_PIN) when RST is strapped to 3V3
-static const uint8_t kDefaultSckPin = 18;
-static const uint8_t kDefaultMisoPin = 19;
-static const uint8_t kDefaultMosiPin = 23;
+namespace rc522hce {
+
+// Pin defaults come from Rc522HceConfig.h, so a build flag or board preset
+// changes them without touching source — and default construction still works.
+static const uint8_t kDefaultSsPin = RC522HCE_SS_PIN;
+static const uint8_t kDefaultRstPin = RC522HCE_RST_PIN;
+static const uint8_t kDefaultSckPin = RC522HCE_SCK_PIN;
+static const uint8_t kDefaultMisoPin = RC522HCE_MISO_PIN;
+static const uint8_t kDefaultMosiPin = RC522HCE_MOSI_PIN;
 
 struct Rc522HceOptions {
     uint32_t reinitIntervalMs = 5000;  // PCD retry + runtime probe cadence
@@ -147,9 +149,32 @@ public:
           ssPin_(ssPin),
           log_(log),
           options_(options),
-          randomWord_(randomWord != nullptr ? randomWord : defaultRandomWord) {}
+          randomWord_(randomWord != nullptr ? randomWord : defaultRandomWord) {
+        // The configured AID is the default selection; setAid() may change it.
+        memcpy(aid_, AID, AID_LEN);
+        aidLen_ = AID_LEN;
+    }
 
     void setLog(Print* log) { log_ = log; }
+
+    /**
+     * Override the AID your phone app serves, at runtime — no reflash of the
+     * reader, no dependency change. Accepts 1..MAX_AID_LEN bytes; anything
+     * else is ignored (returns false, previous AID kept). Changing this
+     * breaks phone apps built for the old AID.
+     */
+    bool setAid(const uint8_t* aid, size_t len) {
+        if (aid == nullptr || len == 0 || len > MAX_AID_LEN) {
+            return false;
+        }
+        memcpy(aid_, aid, len);
+        aidLen_ = len;
+        return true;
+    }
+
+    /** The AID currently selected (defaults to the configured one). */
+    const uint8_t* aid() const { return aid_; }
+    size_t aidLen() const { return aidLen_; }
 
     bool begin() override {
 #ifdef ESP32
@@ -340,7 +365,7 @@ private:
 
         uint8_t cmd[16], resp[64];
         uint8_t respLen = sizeof(resp);
-        const uint8_t cmdLen = static_cast<uint8_t>(buildSelectAid(cmd, sizeof(cmd)));
+        const uint8_t cmdLen = static_cast<uint8_t>(buildSelectAidWith(aid_, aidLen_, cmd, sizeof(cmd)));
         // BEWARE the mutual-timeout race (bench-proven): our RX window is
         // only ~10 ms, while a warm app answer takes several ms via
         // controller → DH → app → DH → controller — and the PHONE runs
@@ -876,12 +901,13 @@ private:
     uint8_t ssPin_;
     Print* log_;                 // nullable diagnostics sink
     Rc522HceOptions options_;
-    const char* lastKind_ = "physical";
-    HceProof lastProof_;         // relayed transcript (+ wrapped key in enrollment)
+    const char* lastKind_ = "physical";    HceProof lastProof_;         // relayed transcript (+ wrapped key in enrollment)
     bool enrollment_ = false;    // enrollment mode → ENROLL after CHALLENGE
     bool redactFrames_ = false;  // true while an ENROLL (key-bearing) exchange runs
     std::string wrapSecret_;     // this reader's secret, only while enrolling
     RandomWordFn randomWord_;    // nonce source (see RandomWordFn)
+    uint8_t aid_[MAX_AID_LEN];   // AID this reader SELECTs (setAid to change)
+    size_t aidLen_ = 0;          // set by the constructor from the config
 
     bool healthy_ = false;       // last probe answered?
     uint8_t version_ = 0;        // last VersionReg byte seen

@@ -40,7 +40,7 @@ jobs:
           else
             echo "sha=${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ steps.target.outputs.sha }}
           fetch-depth: 0
